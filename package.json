@@ -1,14 +1,43 @@
 {
-  "name": "manual-editor-groups",
+  "name": "open-editor-groups",
   "displayName": "Open Editor Groups",
-  "description": "Manually group open editors in a tree view with drag & drop and persistent subgroups. Similar to Open Editors but customizable.",
-  "version": "0.1.0",
-  "publisher": "local",
+  "description": "Group and organize open editors in a tree view with drag and drop, nested groups, sort, and persistent workspace storage.",
+  "version": "0.1.1",
+  "publisher": "esancaro",
+  "author": {
+    "name": "Esteban Castro",
+    "email": "esancaro@gmail.com"
+  },
+  "license": "MIT",
+  "icon": "media/icon.png",
+  "galleryBanner": {
+    "color": "#15202B",
+    "theme": "dark"
+  },
+  "homepage": "https://github.com/esancaro/vsOpenEditorGroups#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/esancaro/vsOpenEditorGroups.git"
+  },
+  "bugs": {
+    "url": "https://github.com/esancaro/vsOpenEditorGroups/issues"
+  },
+  "qna": "marketplace",
   "engines": {
     "vscode": "^1.80.0"
   },
   "categories": [
     "Other"
+  ],
+  "keywords": [
+    "open editors",
+    "editor groups",
+    "tabs",
+    "grouping",
+    "organize",
+    "explorer",
+    "tree",
+    "files"
   ],
   "activationEvents": [
     "onView:manualEditorGroups"
@@ -89,6 +118,21 @@
         "title": "Close All in Group",
         "category": "OEG",
         "icon": "$(close-all)"
+      },
+      {
+        "command": "manualEditorGroups.copyPath",
+        "title": "Copy Path",
+        "category": "OEG"
+      },
+      {
+        "command": "manualEditorGroups.copyRelativePath",
+        "title": "Copy Relative Path",
+        "category": "OEG"
+      },
+      {
+        "command": "manualEditorGroups.copyFilename",
+        "title": "Copy Filename",
+        "category": "OEG"
       },
       {
         "command": "manualEditorGroups.refresh",
@@ -259,6 +303,21 @@
           "command": "manualEditorGroups.closeEditorsInGroup",
           "when": "view == manualEditorGroups && viewItem == group",
           "group": "3_close@1"
+        },
+        {
+          "command": "manualEditorGroups.copyPath",
+          "when": "view == manualEditorGroups && viewItem == file",
+          "group": "4_copy@1"
+        },
+        {
+          "command": "manualEditorGroups.copyRelativePath",
+          "when": "view == manualEditorGroups && viewItem == file",
+          "group": "4_copy@2"
+        },
+        {
+          "command": "manualEditorGroups.copyFilename",
+          "when": "view == manualEditorGroups && viewItem == file",
+          "group": "4_copy@3"
         }
       ],
       "editor/title/context": [
@@ -276,13 +335,17 @@
     }
   },
   "scripts": {
+    "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
+    "package": "vsce package --no-dependencies",
+    "publish:marketplace": "vsce publish --no-dependencies",
     "pretest": "npm run compile"
   },
   "devDependencies": {
     "@types/node": "^18.19.0",
     "@types/vscode": "^1.80.0",
+    "@vscode/vsce": "^3.6.0",
     "typescript": "^5.4.0"
   }
 }

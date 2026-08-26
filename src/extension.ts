@@ -1520,6 +1520,32 @@ function sameElement(a: TreeElement, b: TreeElement): boolean {
  * as a stand-in for the clicked file — with canSelectMany it can report every
  * root item, which would add all open editors to a group.
  */
+function fileUriFromCommand(element?: unknown): vscode.Uri | undefined {
+  const clicked = Array.isArray(element) ? undefined : normalizeElement(element);
+  if (typeof clicked === 'string') {
+    return vscode.Uri.parse(clicked);
+  }
+  const tab = vscode.window.tabGroups.activeTabGroup?.activeTab;
+  const tabUri = tab ? tabResourceUri(tab) : undefined;
+  return tabUri ?? vscode.window.activeTextEditor?.document.uri;
+}
+
+async function copyFileText(element: unknown | undefined, kind: 'path' | 'relative' | 'filename'): Promise<void> {
+  const uri = fileUriFromCommand(element);
+  if (!uri) {
+    return;
+  }
+  let text: string;
+  if (kind === 'path') {
+    text = uri.fsPath;
+  } else if (kind === 'relative') {
+    text = vscode.workspace.asRelativePath(uri, false);
+  } else {
+    text = path.parse(uri.fsPath || uri.path).name;
+  }
+  await vscode.env.clipboard.writeText(text);
+}
+
 function resolveCommandTargets(item?: unknown, selectedItems?: unknown): TreeElement[] {
   const clicked = Array.isArray(item) ? undefined : normalizeElement(item);
   const selected = asElementList(
@@ -1659,6 +1685,18 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('manualEditorGroups.manageGroupPatterns', async () => {
       if (!provider) return;
       await provider.manageGroupPatterns();
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('manualEditorGroups.copyPath', async (element?: unknown) => {
+      await copyFileText(element, 'path');
+    }),
+    vscode.commands.registerCommand('manualEditorGroups.copyRelativePath', async (element?: unknown) => {
+      await copyFileText(element, 'relative');
+    }),
+    vscode.commands.registerCommand('manualEditorGroups.copyFilename', async (element?: unknown) => {
+      await copyFileText(element, 'filename');
     })
   );
 

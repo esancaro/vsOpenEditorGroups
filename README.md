@@ -1,6 +1,14 @@
 # Open Editor Groups
 
-A VS Code extension that provides a customizable **Open Editor Groups** tree view (similar to the built-in Open Editors panel) where you can manually organize your open editors using drag & drop, create nested subgroups, and have your groupings persisted across sessions.
+<img src="media/icon.png" alt="Open Editor Groups" width="128" height="128">
+
+Group and organize your open editors in a tree view — like Open Editors, with folders you control.
+
+Create nested groups, drag files in and out, sort or rearrange by hand, and auto-assign files with regex patterns. Groupings are saved in the workspace so they come back the next time you open the same files.
+
+## Install
+
+Install from the [Visual Studio Code Marketplace](https://marketplace.visualstudio.com/items?itemName=esancaro.open-editor-groups), or from the Extensions view (`Ctrl+Shift+X`) by searching for **Open Editor Groups**.
 
 ## Features
 
@@ -62,6 +70,7 @@ Accessible from the view title bar or right-click context menus:
 - Rename Group
 - Delete Group
 - Move to Ungrouped (on a file entry)
+- Copy Path / Copy Relative Path / Copy Filename (right-click a file; filename is without the extension)
 - Close (on a file entry; also the inline x)
 - Close All in Group (on a group; also the inline close-all)
 - Refresh
@@ -117,16 +126,34 @@ Example:
 - Pattern matching uses JavaScript regular expressions against the workspace-relative path. First matching rule wins. Ungrouping a file does not re-apply the rule until that file is closed and opened again.
 - Renames done through VS Code are tracked. Renames that happen only on disk (outside VS Code) are not.
 
+## Privacy
+
+Grouping data is stored only in your workspace file `.vscode/editor-groups.json`. The extension does not send telemetry or network requests.
+
 ## Development
 
 - Clone / open this folder in VS Code.
 - `npm install`
 - `npm run compile` (or use the watch task)
 - Press F5 to launch a new Extension Development Host window.
-- The "Open Editor Groups" view will appear in the Explorer panel.
+- The **Open Editor Groups** view appears in the Explorer panel.
 
-Contributions and feedback welcome!
+### Package a VSIX
+
+```bash
+npm run package
+```
+
+Install the generated `.vsix` in VS Code with **Extensions: Install from VSIX…**.
+
+### Publish to the Marketplace
+
+1. Create a publisher named `esancaro` at [Visual Studio Marketplace Management](https://marketplace.visualstudio.com/manage) (Azure DevOps PAT with **Marketplace → Manage**).
+2. `npx vsce login esancaro`
+3. `npm run publish:marketplace`
+
+To publish a version bump: `npx vsce publish minor` (or `patch` / `major`).
 
 ## License
 
-MIT (or your choice)
+[MIT](LICENSE) © Esteban Castro
