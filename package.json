@@ -1,0 +1,288 @@
+{
+  "name": "manual-editor-groups",
+  "displayName": "Open Editor Groups",
+  "description": "Manually group open editors in a tree view with drag & drop and persistent subgroups. Similar to Open Editors but customizable.",
+  "version": "0.1.0",
+  "publisher": "local",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onView:manualEditorGroups"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "views": {
+      "explorer": [
+        {
+          "id": "manualEditorGroups",
+          "name": "Open Editor Groups",
+          "icon": "$(list-tree)",
+          "contextualTitle": "Open Editor Groups"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "manualEditorGroups",
+        "contents": "No open editors to group yet.\n\nOpen some files, then create a group with the + button or by right-clicking in this view.\nDrag files here from the Explorer or from the ungrouped list."
+      }
+    ],
+    "commands": [
+      {
+        "command": "manualEditorGroups.createGroup",
+        "title": "Create Group",
+        "category": "OEG",
+        "icon": "$(add)"
+      },
+      {
+        "command": "manualEditorGroups.createSubgroup",
+        "title": "Create Subgroup",
+        "category": "OEG"
+      },
+      {
+        "command": "manualEditorGroups.renameGroup",
+        "title": "Rename Group",
+        "category": "OEG"
+      },
+      {
+        "command": "manualEditorGroups.deleteGroup",
+        "title": "Delete Group",
+        "category": "OEG"
+      },
+      {
+        "command": "manualEditorGroups.ungroupFile",
+        "title": "Move to Ungrouped",
+        "category": "OEG"
+      },
+      {
+        "command": "manualEditorGroups.addToGroup",
+        "title": "Add to Group",
+        "category": "OEG"
+      },
+      {
+        "command": "manualEditorGroups.addToNewGroup",
+        "title": "Add to New Group",
+        "category": "OEG"
+      },
+      {
+        "command": "manualEditorGroups.groupByPattern",
+        "title": "Group by Pattern",
+        "category": "OEG"
+      },
+      {
+        "command": "manualEditorGroups.manageGroupPatterns",
+        "title": "Manage Group Patterns",
+        "category": "OEG"
+      },
+      {
+        "command": "manualEditorGroups.closeEditor",
+        "title": "Close",
+        "category": "OEG",
+        "icon": "$(close)"
+      },
+      {
+        "command": "manualEditorGroups.closeEditorsInGroup",
+        "title": "Close All in Group",
+        "category": "OEG",
+        "icon": "$(close-all)"
+      },
+      {
+        "command": "manualEditorGroups.refresh",
+        "title": "Refresh",
+        "category": "OEG",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "manualEditorGroups.sortIconAscending",
+        "title": "Sorted A-Z (click for Z-A)",
+        "icon": "$(arrow-up)"
+      },
+      {
+        "command": "manualEditorGroups.sortIconDescending",
+        "title": "Sorted Z-A (click to turn sorting off)",
+        "icon": "$(arrow-down)"
+      },
+      {
+        "command": "manualEditorGroups.sortIconOff",
+        "title": "Sorting off — drag to reorder (click for A-Z)",
+        "icon": "$(gripper)"
+      },
+      {
+        "command": "manualEditorGroups.sortByName",
+        "title": "Sort A-Z",
+        "category": "OEG"
+      },
+      {
+        "command": "manualEditorGroups.sortByNameDesc",
+        "title": "Sort Z-A",
+        "category": "OEG"
+      },
+      {
+        "command": "manualEditorGroups.sortManual",
+        "title": "Turn Off Sorting (Drag to Reorder)",
+        "category": "OEG"
+      }
+    ],
+    "submenus": [
+      {
+        "id": "manualEditorGroups.sortMenu",
+        "label": "Sort"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "manualEditorGroups.createGroup",
+          "when": "view == manualEditorGroups",
+          "group": "navigation"
+        },
+        {
+          "command": "manualEditorGroups.refresh",
+          "when": "view == manualEditorGroups",
+          "group": "navigation"
+        },
+        {
+          "command": "manualEditorGroups.sortIconAscending",
+          "when": "view == manualEditorGroups && manualEditorGroups.sortMode != nameDesc && manualEditorGroups.sortMode != manual",
+          "group": "navigation"
+        },
+        {
+          "command": "manualEditorGroups.sortIconDescending",
+          "when": "view == manualEditorGroups && manualEditorGroups.sortMode == nameDesc",
+          "group": "navigation"
+        },
+        {
+          "command": "manualEditorGroups.sortIconOff",
+          "when": "view == manualEditorGroups && manualEditorGroups.sortMode == manual",
+          "group": "navigation"
+        },
+        {
+          "submenu": "manualEditorGroups.sortMenu",
+          "when": "view == manualEditorGroups",
+          "group": "2_sort"
+        },
+        {
+          "command": "manualEditorGroups.groupByPattern",
+          "when": "view == manualEditorGroups",
+          "group": "3_patterns@1"
+        },
+        {
+          "command": "manualEditorGroups.manageGroupPatterns",
+          "when": "view == manualEditorGroups",
+          "group": "3_patterns@2"
+        }
+      ],
+      "manualEditorGroups.sortMenu": [
+        {
+          "command": "manualEditorGroups.sortByName",
+          "group": "1_sort@1"
+        },
+        {
+          "command": "manualEditorGroups.sortByNameDesc",
+          "group": "1_sort@2"
+        },
+        {
+          "command": "manualEditorGroups.sortManual",
+          "group": "1_sort@3"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "manualEditorGroups.sortIconAscending",
+          "when": "false"
+        },
+        {
+          "command": "manualEditorGroups.sortIconDescending",
+          "when": "false"
+        },
+        {
+          "command": "manualEditorGroups.sortIconOff",
+          "when": "false"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "manualEditorGroups.createSubgroup",
+          "when": "view == manualEditorGroups && viewItem == group",
+          "group": "1_group@1"
+        },
+        {
+          "command": "manualEditorGroups.renameGroup",
+          "when": "view == manualEditorGroups && viewItem == group",
+          "group": "1_group@2"
+        },
+        {
+          "command": "manualEditorGroups.deleteGroup",
+          "when": "view == manualEditorGroups && viewItem == group",
+          "group": "1_group@3"
+        },
+        {
+          "command": "manualEditorGroups.groupByPattern",
+          "when": "view == manualEditorGroups && viewItem == group",
+          "group": "1_group@4"
+        },
+        {
+          "command": "manualEditorGroups.addToGroup",
+          "when": "view == manualEditorGroups && (viewItem == file || viewItem == group)",
+          "group": "1_modification@1"
+        },
+        {
+          "command": "manualEditorGroups.ungroupFile",
+          "when": "view == manualEditorGroups && viewItem == file",
+          "group": "1_modification@2"
+        },
+        {
+          "command": "manualEditorGroups.addToNewGroup",
+          "when": "view == manualEditorGroups && (viewItem == file || viewItem == group)",
+          "group": "1_modification@3"
+        },
+        {
+          "command": "manualEditorGroups.closeEditor",
+          "when": "view == manualEditorGroups && viewItem == file",
+          "group": "inline"
+        },
+        {
+          "command": "manualEditorGroups.closeEditorsInGroup",
+          "when": "view == manualEditorGroups && viewItem == group",
+          "group": "inline"
+        },
+        {
+          "command": "manualEditorGroups.closeEditor",
+          "when": "view == manualEditorGroups && viewItem == file",
+          "group": "3_close@1"
+        },
+        {
+          "command": "manualEditorGroups.closeEditorsInGroup",
+          "when": "view == manualEditorGroups && viewItem == group",
+          "group": "3_close@1"
+        }
+      ],
+      "editor/title/context": [
+        {
+          "command": "manualEditorGroups.addToGroup",
+          "group": "1_openEditorGroups@1"
+        }
+      ],
+      "tab/context": [
+        {
+          "command": "manualEditorGroups.addToGroup",
+          "group": "1_openEditorGroups@1"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile"
+  },
+  "devDependencies": {
+    "@types/node": "^18.19.0",
+    "@types/vscode": "^1.80.0",
+    "typescript": "^5.4.0"
+  }
+}

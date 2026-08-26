@@ -1,0 +1,14 @@
+# Dependencies
+node_modules/
+
+# Build output
+out/
+
+# VS Code
+.vscode-test/
+.vscode/
+
+# Misc
+.DS_Store
+*.log
+*.vsix
