@@ -6,12 +6,7 @@ export interface Group {
   id: string;
   name: string;
   children: (Group | string)[];
-}
-
-interface GroupPattern {
-  pattern: string;
-  groupId: string;
-  group: string;
+  pattern?: string;
 }
 
 type SortMode = 'manual' | 'name' | 'nameDesc';
@@ -19,7 +14,8 @@ type SortMode = 'manual' | 'name' | 'nameDesc';
 interface PersistedData {
   version: number;
   groups: Group[];
-  patterns?: GroupPattern[];
+  /** @deprecated Migrated onto Group.pattern on load. */
+  patterns?: { pattern: string; groupId?: string; group?: string }[];
   sortMode?: SortMode;
 }
 
@@ -38,10 +34,20 @@ export interface FileNode {
   parentId: string | null;
 }
 
-type TreeElement = Group | FileNode;
+export interface SeparatorNode {
+  kind: 'separator';
+}
+
+type TreeElement = Group | FileNode | SeparatorNode;
+
+const UNGROUPED_SEPARATOR: SeparatorNode = { kind: 'separator' };
 
 function isFileNode(node: unknown): node is FileNode {
   return !!node && typeof node === 'object' && (node as FileNode).kind === 'file';
+}
+
+function isSeparator(node: unknown): node is SeparatorNode {
+  return !!node && typeof node === 'object' && (node as SeparatorNode).kind === 'separator';
 }
 
 const MIME_TYPE = 'application/vnd.code.tree.manualeditorgroups';
@@ -57,8 +63,23 @@ function isGroup(node: unknown): node is Group {
   return !!node
     && typeof node === 'object'
     && !isFileNode(node)
+    && !isSeparator(node)
     && typeof (node as Group).id === 'string'
     && Array.isArray((node as Group).children);
+}
+
+/**
+ * Compile a user regex against the whole workspace-relative path.
+ * Patterns that do not already use ^ or $ are wrapped as ^(?:pattern)$ so
+ * `.*.js` matches `src/foo.js` but not `package.json` (substring `.js`).
+ */
+function compileUserPattern(pattern: string): RegExp {
+  const source = pattern.trim();
+  if (!source) {
+    throw new Error('Empty pattern');
+  }
+  const alreadyAnchored = source.startsWith('^') || source.endsWith('$');
+  return new RegExp(alreadyAnchored ? source : `^(?:${source})$`);
 }
 
 function makeFileNode(uri: string, parentId: string | null): FileNode {
@@ -100,11 +121,11 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
   readonly onDidChangeTreeData: vscode.Event<TreeElement | undefined | null | void> = this._onDidChangeTreeData.event;
 
   public rootGroups: Group[] = [];
-  public patterns: GroupPattern[] = [];
   public sortMode: SortMode = 'name';
   private openUris = new Set<string>();
   private dirtyUris = new Set<string>();
-  private consideredOpenUris = new Set<string>();
+  private fileNodeCache = new Map<string, FileNode>();
+  private revealingActive = false;
   private storageUri: vscode.Uri | undefined;
 
   constructor() {
@@ -125,12 +146,8 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
     } else {
       this.storageUri = undefined;
     }
-    this.consideredOpenUris.clear();
     await this.load();
     this.refreshOpenUris();
-    if (this.applyPatternsToNewOpens()) {
-      await this.save();
-    }
     this.refresh();
   }
 
@@ -141,6 +158,9 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
       }),
       vscode.window.tabGroups.onDidChangeTabGroups(() => {
         void this.onOpenEditorsChanged();
+      }),
+      vscode.window.onDidChangeActiveTextEditor(() => {
+        void this.revealActiveEditor();
       }),
       vscode.workspace.onDidChangeWorkspaceFolders(async () => {
         await this.initializeStorage();
@@ -185,11 +205,10 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
 
   private async onOpenEditorsChanged(): Promise<void> {
     this.refreshOpenUris();
-    const changed = this.applyPatternsToNewOpens();
-    if (changed) {
-      await this.save();
-    }
     this._onDidChangeTreeData.fire();
+    setTimeout(() => {
+      void this.revealActiveEditor();
+    }, 0);
   }
 
   private refreshOpenUris() {
@@ -213,10 +232,17 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
   private collectAllAssignedUris(): Set<string> {
     const set = new Set<string>();
     const walk = (g: Group) => {
+      if (g.pattern) {
+        for (const uri of this.openFilesMatching(g.pattern)) {
+          set.add(uri);
+        }
+      }
       for (const child of g.children) {
         if (typeof child === 'string') {
-          set.add(child);
-        } else {
+          if (!g.pattern) {
+            set.add(child);
+          }
+        } else if (isGroup(child)) {
           walk(child);
         }
       }
@@ -227,12 +253,39 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
     return set;
   }
 
+  private openFilesMatching(pattern: string): string[] {
+    let re: RegExp;
+    try {
+      re = compileUserPattern(pattern);
+    } catch {
+      return [];
+    }
+    const out: string[] = [];
+    for (const uriStr of this.openUris) {
+      if (re.test(this.toMatchPath(uriStr))) {
+        out.push(uriStr);
+      }
+    }
+    return out;
+  }
+
+  private matchesPattern(pattern: string, uriStr: string): boolean {
+    try {
+      return compileUserPattern(pattern).test(this.toMatchPath(uriStr));
+    } catch {
+      return false;
+    }
+  }
+
   private countOpenFilesInSubtree(group: Group): number {
     let count = 0;
     const walk = (g: Group) => {
+      if (g.pattern) {
+        count += this.openFilesMatching(g.pattern).length;
+      }
       for (const child of g.children) {
         if (typeof child === 'string') {
-          if (this.openUris.has(child)) count++;
+          if (!g.pattern && this.openUris.has(child)) count++;
         } else if (isGroup(child)) {
           walk(child);
         }
@@ -245,9 +298,12 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
   private countAllFilesInSubtree(group: Group): number {
     let count = 0;
     const walk = (g: Group) => {
+      if (g.pattern) {
+        count += this.openFilesMatching(g.pattern).length;
+      }
       for (const child of g.children ?? []) {
         if (typeof child === 'string') {
-          count++;
+          if (!g.pattern) count++;
         } else if (isGroup(child)) {
           walk(child);
         }
@@ -260,9 +316,12 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
   private collectFileUrisInSubtree(group: Group): string[] {
     const uris: string[] = [];
     const walk = (g: Group) => {
+      if (g.pattern) {
+        uris.push(...this.openFilesMatching(g.pattern));
+      }
       for (const child of g.children ?? []) {
         if (typeof child === 'string') {
-          uris.push(child);
+          if (!g.pattern) uris.push(child);
         } else if (isGroup(child)) {
           walk(child);
         }
@@ -273,27 +332,13 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
   }
 
   private collectOpenUrisInSubtree(group: Group): string[] {
-    const uris: string[] = [];
-    const walk = (g: Group) => {
-      for (const child of g.children) {
-        if (typeof child === 'string') {
-          if (this.openUris.has(child)) {
-            uris.push(child);
-          }
-        } else {
-          walk(child);
-        }
-      }
-    };
-    walk(group);
-    return uris;
+    return this.collectFileUrisInSubtree(group).filter((uri) => this.openUris.has(uri));
   }
 
   // --- Persistence ---
 
   private async load() {
     this.rootGroups = [];
-    this.patterns = [];
     if (!this.storageUri) {
       return;
     }
@@ -304,12 +349,13 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
       if (data && Array.isArray(data.groups)) {
         this.rootGroups = this.sanitizeGroups(data.groups);
       }
-      this.patterns = this.sanitizePatterns(data?.patterns);
+      const migrated = this.migrateLegacyPatterns(data?.patterns);
       this.sortMode = this.sanitizeSortMode(data?.sortMode);
-      this.syncPatternLabels();
+      if (migrated) {
+        await this.save();
+      }
     } catch {
       this.rootGroups = [];
-      this.patterns = [];
       this.sortMode = 'name';
     }
   }
@@ -327,51 +373,81 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
       if (!raw || typeof raw !== 'object') continue;
       const id = typeof raw.id === 'string' ? raw.id : generateId();
       const name = typeof raw.name === 'string' ? raw.name : 'Group';
+      let pattern: string | undefined;
+      if (typeof raw.pattern === 'string' && raw.pattern.trim()) {
+        try {
+          compileUserPattern(raw.pattern);
+          pattern = raw.pattern.trim();
+        } catch {
+          pattern = undefined;
+        }
+      }
       const children: (Group | string)[] = [];
       if (Array.isArray(raw.children)) {
         for (const c of raw.children) {
           if (typeof c === 'string' && c.length > 0) {
-            children.push(this.fromStoragePath(c));
+            if (!pattern) {
+              children.push(this.fromStoragePath(c));
+            }
           } else if (c && typeof c === 'object') {
             const sub = this.sanitizeGroups([c]);
             if (sub.length > 0) children.push(sub[0]);
           }
         }
       }
-      result.push({ id, name, children });
+      result.push({ id, name, children, pattern });
     }
     return result;
   }
 
-  private sanitizePatterns(raw: any): GroupPattern[] {
-    if (!Array.isArray(raw)) {
-      return [];
+  private migrateLegacyPatterns(raw: PersistedData['patterns']): boolean {
+    if (!Array.isArray(raw) || raw.length === 0) {
+      return false;
     }
-    const result: GroupPattern[] = [];
+    let migrated = false;
     for (const item of raw) {
-      if (!item || typeof item !== 'object') continue;
-      if (typeof item.pattern !== 'string' || !item.pattern.trim()) continue;
+      if (!item || typeof item.pattern !== 'string' || !item.pattern.trim()) continue;
       try {
-        new RegExp(item.pattern);
+        compileUserPattern(item.pattern);
       } catch {
         continue;
       }
-      const groupId = typeof item.groupId === 'string' ? item.groupId : '';
-      const group = typeof item.group === 'string' ? item.group : '';
-      if (!groupId && !group) continue;
-      result.push({ pattern: item.pattern, groupId, group });
+      let group: Group | undefined;
+      if (typeof item.groupId === 'string') {
+        group = this.findGroupById(item.groupId);
+      }
+      if (!group && typeof item.group === 'string') {
+        group = this.collectGroupsWithPaths().find((e) => e.path === item.group)?.group;
+      }
+      if (group && !group.pattern) {
+        group.pattern = item.pattern.trim();
+        migrated = true;
+      }
     }
-    return result;
+    return migrated;
   }
 
   private toPersistedGroups(groups: Group[]): Group[] {
-    return groups.map((g) => ({
-      id: g.id,
-      name: g.name,
-      children: g.children.map((c) =>
-        typeof c === 'string' ? this.toStoragePath(c) : this.toPersistedGroups([c])[0]
-      )
-    }));
+    return groups.map((g) => {
+      const persisted: Group = {
+        id: g.id,
+        name: g.name,
+        children: []
+      };
+      if (g.pattern) {
+        persisted.pattern = g.pattern;
+      }
+      for (const c of g.children) {
+        if (typeof c === 'string') {
+          if (!g.pattern) {
+            persisted.children.push(this.toStoragePath(c));
+          }
+        } else {
+          persisted.children.push(this.toPersistedGroups([c])[0]);
+        }
+      }
+      return persisted;
+    });
   }
 
   /**
@@ -442,11 +518,9 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
       return;
     }
     try {
-      this.syncPatternLabels();
       const data: PersistedData = {
         version: 2,
         groups: this.toPersistedGroups(this.rootGroups),
-        patterns: this.patterns,
         sortMode: this.sortMode
       };
       const text = JSON.stringify(data, null, 2);
@@ -459,6 +533,15 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
   // --- TreeDataProvider ---
 
   getTreeItem(element: TreeElement): vscode.TreeItem {
+    if (isSeparator(element)) {
+      const item = new vscode.TreeItem('Ungrouped', vscode.TreeItemCollapsibleState.None);
+      item.id = 'separator:ungrouped';
+      item.contextValue = 'separator';
+      item.iconPath = new vscode.ThemeIcon('dash');
+      item.tooltip = 'Open editors that are not in a group';
+      return item;
+    }
+
     if (isFileNode(element)) {
       const uri = vscode.Uri.parse(element.uri);
       const basename = path.basename(uri.fsPath || uri.path);
@@ -468,7 +551,8 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
 
       item.id = `f:${element.parentId ?? 'root'}:${element.uri}`;
       item.resourceUri = uri;
-      item.contextValue = 'file';
+      const parent = element.parentId ? this.findGroupById(element.parentId) : undefined;
+      item.contextValue = parent?.pattern ? 'file-pattern' : 'file';
       item.iconPath = vscode.ThemeIcon.File;
       item.command = {
         command: 'vscode.open',
@@ -507,16 +591,27 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
       vscode.TreeItemCollapsibleState.Collapsed
     );
     item.id = `g:${group.id}`;
-    item.contextValue = 'group';
-    item.iconPath = new vscode.ThemeIcon('folder');
-    item.tooltip = totalCount > 0
-      ? `${group.name} — ${openCount} open / ${totalCount} files`
-      : group.name;
-    if (openCount > 0) {
-      item.description = `(${openCount} open)`;
-    } else if (totalCount > 0) {
-      item.description = `(${totalCount})`;
+    const pattern = group.pattern;
+    item.contextValue = pattern ? 'group-pattern' : 'group';
+    item.iconPath = pattern
+      ? new vscode.ThemeIcon('folder', new vscode.ThemeColor('charts.green'))
+      : new vscode.ThemeIcon('folder');
+    const countLabel = openCount > 0
+      ? `(${openCount} open)`
+      : totalCount > 0
+        ? `(${totalCount})`
+        : undefined;
+    item.description = pattern
+      ? (countLabel ? `.* ${countLabel}` : '.*')
+      : countLabel;
+    const tooltipBits = [group.name];
+    if (totalCount > 0) {
+      tooltipBits.push(`${openCount} open / ${totalCount} files`);
     }
+    if (pattern) {
+      tooltipBits.push(`pattern /${pattern}/`);
+    }
+    item.tooltip = tooltipBits.join(' — ');
     return item;
   }
 
@@ -529,13 +624,14 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
           ungrouped.push(uriStr);
         }
       }
-      return Promise.resolve([
-        ...this.rootGroups,
-        ...this.orderFiles(ungrouped, false).map((uri) => makeFileNode(uri, null))
-      ]);
+      const ungroupedNodes = this.orderFiles(ungrouped, false).map((uri) => this.cachedFileNode(uri, null));
+      if (this.rootGroups.length > 0 && ungroupedNodes.length > 0) {
+        return Promise.resolve([...this.rootGroups, UNGROUPED_SEPARATOR, ...ungroupedNodes]);
+      }
+      return Promise.resolve([...this.rootGroups, ...ungroupedNodes]);
     }
 
-    if (isFileNode(element)) {
+    if (isFileNode(element) || isSeparator(element)) {
       return Promise.resolve([]);
     }
 
@@ -546,13 +642,17 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
     const groups: Group[] = [];
     const files: string[] = [];
     const mixed: TreeElement[] = [];
+    const patternFiles = group.pattern ? this.openFilesMatching(group.pattern) : undefined;
     for (const child of group.children ?? []) {
       if (typeof child === 'string') {
+        if (patternFiles) {
+          continue;
+        }
         if (!this.openUris.has(child)) {
           continue;
         }
         if (this.sortMode === 'manual') {
-          mixed.push(makeFileNode(child, group.id));
+          mixed.push(this.cachedFileNode(child, group.id));
         } else {
           files.push(child);
         }
@@ -564,10 +664,19 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
         }
       }
     }
+    if (patternFiles) {
+      if (this.sortMode === 'manual') {
+        return [
+          ...mixed,
+          ...this.orderFiles(patternFiles, false).map((uri) => this.cachedFileNode(uri, group.id))
+        ];
+      }
+      return [...groups, ...this.orderFiles(patternFiles, false).map((uri) => this.cachedFileNode(uri, group.id))];
+    }
     if (this.sortMode === 'manual') {
       return mixed;
     }
-    return [...groups, ...this.orderFiles(files, false).map((uri) => makeFileNode(uri, group.id))];
+    return [...groups, ...this.orderFiles(files, false).map((uri) => this.cachedFileNode(uri, group.id))];
   }
 
   private orderFiles(files: string[], preserveStoredOrder: boolean): string[] {
@@ -587,6 +696,9 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
   getParent(element: TreeElement): TreeElement | undefined {
     if (isFileNode(element)) {
       return element.parentId ? this.findGroupById(element.parentId) : undefined;
+    }
+    if (isSeparator(element)) {
+      return undefined;
     }
     return this.findParentGroupForGroup(element);
   }
@@ -715,6 +827,9 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
       this.removeGroupFromTree(g);
     }
     for (const f of payload.files) {
+      if (destGroup?.pattern && !this.matchesPattern(destGroup.pattern, f.uri)) {
+        continue;
+      }
       this.removeFileFromGroup(f.uri, f.parentId);
     }
 
@@ -725,7 +840,9 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
     }
 
     if (destGroup) {
-      const uniqueFiles = fileUris.filter((uri) => !this.containsDirectUri(destGroup, uri));
+      const uniqueFiles = destGroup.pattern
+        ? []
+        : fileUris.filter((uri) => !this.containsDirectUri(destGroup, uri));
       const items: (Group | string)[] = [...groupsToMove, ...uniqueFiles];
       this.insertIntoList(destGroup.children, items, before);
     } else {
@@ -771,7 +888,7 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
       toOpen.push(uri);
     }
 
-    if (destGroup) {
+    if (destGroup && !destGroup.pattern) {
       const uniqueFiles = files.filter((uri) => !this.containsDirectUri(destGroup, uri));
       this.insertIntoList(destGroup.children, uniqueFiles, before);
     }
@@ -835,19 +952,15 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
     if (!newName || !newName.trim() || newName.trim() === group.name) return;
 
     group.name = newName.trim();
-    this.syncPatternLabels();
     await this.save();
     this.refresh(group);
   }
 
   public async deleteGroup(group: Group): Promise<void> {
-    const groupIds = this.collectGroupIds(group);
     const removed = this.removeGroupFromTree(group);
     if (!removed) {
       return;
     }
-    this.patterns = (this.patterns ?? []).filter((p) => !groupIds.has(p.groupId));
-    this.syncPatternLabels();
     await this.save();
     this.refresh();
   }
@@ -927,6 +1040,9 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
     }
 
     for (const uri of files) {
+      if (dest.pattern) {
+        continue;
+      }
       if (this.containsDirectUri(dest, uri)) {
         continue;
       }
@@ -964,6 +1080,14 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
 
     for (const node of files) {
       if (node.parentId === dest.id) {
+        continue;
+      }
+      if (dest.pattern) {
+        if (!this.matchesPattern(dest.pattern, node.uri)) {
+          continue;
+        }
+        this.removeFileFromGroup(node.uri, node.parentId);
+        changed = true;
         continue;
       }
       this.removeFileFromGroup(node.uri, node.parentId);
@@ -1045,7 +1169,9 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
     const first = unique[0];
     const defaultName = isFileNode(first)
       ? path.basename(vscode.Uri.parse(first.uri).fsPath || 'File')
-      : first.name;
+      : isGroup(first)
+        ? first.name
+        : 'New Group';
 
     const name = await vscode.window.showInputBox({
       prompt: unique.length === 1 ? 'Name for the new group' : `Name for the new group (${unique.length} items)`,
@@ -1082,55 +1208,127 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
   }
 
   /**
-   * Create a regex rule that auto-adds a newly opened file to a group when
-   * that file is not already assigned to any group. Nested groups are chosen
-   * with a "Parent / Child" path. The regex is matched against the
-   * workspace-relative path (forward slashes).
+   * Create or edit a regex rule stored on the group. Matching open files appear
+   * in the tree but are not written to JSON.
    */
   public async addGroupPattern(preselected?: Group): Promise<void> {
-    const pattern = await vscode.window.showInputBox({
-      title: 'OEG: Group by Pattern',
-      prompt: 'Regex against the workspace-relative path (use / as separator). Matching files are added to this group without removing other memberships.',
-      placeHolder: '.*\\.test\\.ts$',
-      validateInput: (value) => {
+    const group = preselected ?? await this.pickDestinationGroup('Group by Pattern');
+    if (!group) return;
+
+    const result = await this.promptGroupPattern(group, group.pattern);
+    if (result === undefined) {
+      return;
+    }
+
+    if (result === null) {
+      delete group.pattern;
+      await this.save();
+      this.refresh();
+      vscode.window.showInformationMessage(`Removed pattern from "${group.name}".`);
+      return;
+    }
+
+    group.pattern = result;
+    await this.save();
+    this.refresh();
+    const n = this.openFilesMatching(result).length;
+    vscode.window.showInformationMessage(
+      n > 0
+        ? `Pattern saved. ${n} open file${n === 1 ? '' : 's'} currently match "${group.name}".`
+        : `Pattern saved. Open files matching /${result}/ will appear under "${group.name}".`
+    );
+  }
+
+  /** `string` = save, `null` = remove, `undefined` = cancel */
+  private promptGroupPattern(group: Group, current?: string): Promise<string | null | undefined> {
+    return new Promise((resolve) => {
+      const box = vscode.window.createInputBox();
+      box.title = `OEG: Group by Pattern — ${group.name}`;
+      box.prompt = 'JavaScript regex against the whole workspace-relative path (/ as separator). Unanchored patterns are matched end-to-end. Enter or Save to apply.';
+      box.placeholder = '.*\\.js$';
+      box.value = current ?? '';
+      box.ignoreFocusOut = true;
+
+      const saveBtn: vscode.QuickInputButton = {
+        iconPath: new vscode.ThemeIcon('save'),
+        tooltip: 'Save'
+      };
+      const removeBtn: vscode.QuickInputButton = {
+        iconPath: new vscode.ThemeIcon('trash'),
+        tooltip: 'Remove pattern'
+      };
+      box.buttons = current ? [saveBtn, removeBtn] : [saveBtn];
+
+      const validate = (value: string): string | undefined => {
         if (!value.trim()) {
-          return 'Enter a regular expression';
+          return current ? undefined : 'Enter a regular expression';
         }
         try {
-          new RegExp(value);
+          compileUserPattern(value);
           return undefined;
         } catch (err) {
           return String(err);
         }
-      }
+      };
+      box.validationMessage = validate(box.value);
+
+      box.onDidChangeValue((value) => {
+        box.validationMessage = validate(value);
+      });
+
+      let settled = false;
+      const finish = (value: string | null | undefined) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        box.hide();
+        resolve(value);
+      };
+
+      box.onDidTriggerButton((btn) => {
+        if (btn === removeBtn) {
+          finish(null);
+          return;
+        }
+        const v = box.value.trim();
+        const err = validate(v);
+        if (err) {
+          box.validationMessage = err;
+          return;
+        }
+        finish(v);
+      });
+
+      box.onDidAccept(() => {
+        const v = box.value.trim();
+        if (!v && current) {
+          finish(null);
+          return;
+        }
+        const err = validate(v);
+        if (err) {
+          box.validationMessage = err;
+          return;
+        }
+        finish(v);
+      });
+
+      box.onDidHide(() => {
+        if (!settled) {
+          settled = true;
+          resolve(undefined);
+        }
+        box.dispose();
+      });
+
+      box.show();
     });
-    if (!pattern) return;
-
-    const group = preselected ?? await this.pickDestinationGroup('Add matching files to group');
-    if (!group) return;
-
-    const pathLabel = this.collectGroupsWithPaths().find((e) => e.group.id === group.id)?.path ?? group.name;
-    this.patterns.push({
-      pattern: pattern.trim(),
-      groupId: group.id,
-      group: pathLabel
-    });
-
-    this.refreshOpenUris();
-    const applied = this.applyPatternsToUngroupedOpenFiles();
-    await this.save();
-    this.refresh();
-
-    const n = applied;
-    vscode.window.showInformationMessage(
-      n > 0
-        ? `Pattern saved. Added ${n} open file${n === 1 ? '' : 's'} to "${pathLabel}".`
-        : `Pattern saved. Newly opened files matching /${pattern.trim()}/ will be added to "${pathLabel}".`
-    );
   }
 
   public async manageGroupPatterns(): Promise<void> {
-    if (this.patterns.length === 0) {
+    const patterned = this.collectGroupsWithPaths().filter((e) => e.group.pattern);
+    if (patterned.length === 0) {
       const choice = await vscode.window.showInformationMessage(
         'No group patterns yet.',
         'Add Pattern'
@@ -1141,20 +1339,19 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
       return;
     }
 
-    type PatternItem = vscode.QuickPickItem & { action?: 'add' | 'pattern'; index?: number };
+    type PatternItem = vscode.QuickPickItem & { action?: 'add'; group?: Group };
     const picked = await vscode.window.showQuickPick<PatternItem>(
       [
         { label: '$(add) Add pattern', action: 'add' },
-        ...this.patterns.map((p, index) => ({
-          label: p.pattern,
-          description: p.group,
-          action: 'pattern' as const,
-          index
+        ...patterned.map((e) => ({
+          label: e.group.pattern!,
+          description: e.path,
+          group: e.group
         }))
       ],
       {
         title: 'OEG: Manage Group Patterns',
-        placeHolder: 'Add a pattern, or select one to change its group or delete it'
+        placeHolder: 'Add a pattern, or select one to edit or remove'
       }
     );
     if (!picked) return;
@@ -1163,117 +1360,9 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
       await this.addGroupPattern();
       return;
     }
-
-    const index = picked.index;
-    if (index === undefined) return;
-    const current = this.patterns[index];
-    if (!current) return;
-
-    const action = await vscode.window.showQuickPick(
-      [
-        { label: 'Change group', id: 'move' },
-        { label: 'Delete pattern', id: 'delete' }
-      ],
-      { title: current.pattern, placeHolder: current.group }
-    );
-    if (!action) return;
-
-    if (action.id === 'delete') {
-      this.patterns.splice(index, 1);
-      await this.save();
-      this.refresh();
-      return;
+    if (picked.group) {
+      await this.addGroupPattern(picked.group);
     }
-
-    const dest = await this.pickDestinationGroup('Move this pattern to group');
-    if (!dest) return;
-    current.groupId = dest.id;
-    current.group = this.collectGroupsWithPaths().find((e) => e.group.id === dest.id)?.path ?? dest.name;
-    await this.save();
-    this.refresh();
-  }
-
-  private applyPatternsToNewOpens(): boolean {
-    let changed = false;
-    for (const uriStr of this.openUris) {
-      const isNew = !this.consideredOpenUris.has(uriStr);
-      this.consideredOpenUris.add(uriStr);
-      if (!isNew) {
-        continue;
-      }
-      if (this.tryAssignByPattern(uriStr)) {
-        changed = true;
-      }
-    }
-    for (const uriStr of [...this.consideredOpenUris]) {
-      if (!this.openUris.has(uriStr)) {
-        this.consideredOpenUris.delete(uriStr);
-      }
-    }
-    return changed;
-  }
-
-  /** Apply patterns to every currently open ungrouped file. Returns how many were added. */
-  private applyPatternsToUngroupedOpenFiles(): number {
-    let count = 0;
-    for (const uriStr of this.openUris) {
-      if (this.tryAssignByPattern(uriStr)) {
-        this.consideredOpenUris.add(uriStr);
-        count++;
-      }
-    }
-    return count;
-  }
-
-  private tryAssignByPattern(uriStr: string): boolean {
-    const rel = this.toMatchPath(uriStr);
-    let added = false;
-    for (const rule of this.patterns) {
-      let re: RegExp;
-      try {
-        re = new RegExp(rule.pattern);
-      } catch {
-        continue;
-      }
-      if (!re.test(rel)) {
-        continue;
-      }
-      const group = this.resolvePatternGroup(rule);
-      if (!group || this.containsDirectUri(group, uriStr)) {
-        continue;
-      }
-      group.children.push(uriStr);
-      added = true;
-    }
-    return added;
-  }
-
-  private resolvePatternGroup(rule: GroupPattern): Group | undefined {
-    const byId = rule.groupId ? this.findGroupById(rule.groupId) : undefined;
-    if (byId) {
-      return byId;
-    }
-    if (rule.group) {
-      return this.collectGroupsWithPaths().find((e) => e.path === rule.group)?.group;
-    }
-    return undefined;
-  }
-
-  private syncPatternLabels(): void {
-    if (!this.patterns) {
-      this.patterns = [];
-    }
-    const paths = this.collectGroupsWithPaths();
-    const byId = new Map(paths.map((e) => [e.group.id, e.path]));
-    for (const rule of this.patterns) {
-      const resolved = this.resolvePatternGroup(rule);
-      if (!resolved) {
-        continue;
-      }
-      rule.groupId = resolved.id;
-      rule.group = byId.get(resolved.id) ?? resolved.name;
-    }
-    this.patterns = (this.patterns ?? []).filter((rule) => !!this.resolvePatternGroup(rule));
   }
 
   private dedupeElements(elements: TreeElement[]): TreeElement[] {
@@ -1329,7 +1418,7 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
     const replaceInList = (list: (Group | string)[]): boolean => {
       for (let i = 0; i < list.length; i++) {
         const item = list[i];
-        if (isGroup(item) && item.id === original.id) {
+        if (isGroup(item) && isGroup(original) && item.id === original.id) {
           wrapper.children = [item];
           list[i] = wrapper;
           return true;
@@ -1421,21 +1510,76 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
     this._onDidChangeTreeData.fire(target);
   }
 
-  // --- Internal tree mutation helpers ---
+  private cachedFileNode(uri: string, parentId: string | null): FileNode {
+    const key = `${parentId ?? ''}::${uri}`;
+    let node = this.fileNodeCache.get(key);
+    if (!node) {
+      node = makeFileNode(uri, parentId);
+      this.fileNodeCache.set(key, node);
+    }
+    return node;
+  }
 
-  private collectGroupIds(group: Group): Set<string> {
-    const ids = new Set<string>();
-    const walk = (g: Group) => {
-      ids.add(g.id);
-      for (const c of g.children ?? []) {
-        if (isGroup(c)) {
-          walk(c);
+  private activeFileUri(): string | undefined {
+    const tab = vscode.window.tabGroups.activeTabGroup?.activeTab;
+    const fromTab = tab ? tabResourceUri(tab) : undefined;
+    if (fromTab) {
+      return fromTab.toString();
+    }
+    return vscode.window.activeTextEditor?.document.uri.toString();
+  }
+
+  private findFirstOpenFileNode(uriStr: string): FileNode | undefined {
+    const walk = (groups: Group[]): FileNode | undefined => {
+      for (const g of groups) {
+        for (const c of g.children ?? []) {
+          if (typeof c === 'string' && c === uriStr && this.openUris.has(c)) {
+            return this.cachedFileNode(c, g.id);
+          }
+          if (isGroup(c)) {
+            const found = walk([c]);
+            if (found) {
+              return found;
+            }
+          }
         }
       }
+      return undefined;
     };
-    walk(group);
-    return ids;
+    const grouped = walk(this.rootGroups);
+    if (grouped) {
+      return grouped;
+    }
+    if (this.openUris.has(uriStr) && !this.collectAllAssignedUris().has(uriStr)) {
+      return this.cachedFileNode(uriStr, null);
+    }
+    return undefined;
   }
+
+  public async revealActiveEditor(): Promise<void> {
+    if (this.revealingActive || !treeView?.visible) {
+      return;
+    }
+    const uriStr = this.activeFileUri();
+    if (!uriStr || !this.openUris.has(uriStr)) {
+      return;
+    }
+    const already = treeView.selection.find((s) => isFileNode(s) && s.uri === uriStr);
+    const target = already ?? this.findFirstOpenFileNode(uriStr);
+    if (!target) {
+      return;
+    }
+    this.revealingActive = true;
+    try {
+      await treeView.reveal(target, { select: true, focus: false, expand: true });
+    } catch {
+      // Element may not be materialized yet
+    } finally {
+      this.revealingActive = false;
+    }
+  }
+
+  // --- Internal tree mutation helpers ---
 
   private findGroupById(id: string, groups: Group[] = this.rootGroups): Group | undefined {
     for (const g of groups) {
@@ -1538,6 +1682,9 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
   }
 
   private containsDirectUri(group: Group, uriStr: string): boolean {
+    if (group.pattern) {
+      return this.matchesPattern(group.pattern, uriStr);
+    }
     return (group.children ?? []).some((c) => typeof c === 'string' && c === uriStr);
   }
 
@@ -1580,7 +1727,7 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
     const search = (groups: Group[]): TreeElement | undefined => {
       for (const g of groups) {
         for (const c of g.children) {
-          if (typeof c === 'string' && c === uriStr) return makeFileNode(c, g.id);
+          if (typeof c === 'string' && c === uriStr) return this.cachedFileNode(c, g.id);
           if (isGroup(c)) {
             const found = search([c]);
             if (found) return found;
@@ -1753,6 +1900,7 @@ export async function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(treeView);
   context.subscriptions.push(...provider.registerListeners());
   provider.refresh();
+  void provider.revealActiveEditor();
 
   context.subscriptions.push(
     vscode.commands.registerCommand('manualEditorGroups.createGroup', async () => {
@@ -1764,7 +1912,7 @@ export async function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.commands.registerCommand('manualEditorGroups.createSubgroup', async (element?: TreeElement) => {
       if (!provider) return;
-      if (!element || isFileNode(element)) {
+      if (!element || !isGroup(element)) {
         await provider.createGroupAtRoot();
         return;
       }
@@ -1774,14 +1922,14 @@ export async function activate(context: vscode.ExtensionContext) {
 
   context.subscriptions.push(
     vscode.commands.registerCommand('manualEditorGroups.renameGroup', async (element?: TreeElement) => {
-      if (!provider || !element || isFileNode(element)) return;
+      if (!provider || !element || !isGroup(element)) return;
       await provider.renameGroup(element);
     })
   );
 
   context.subscriptions.push(
     vscode.commands.registerCommand('manualEditorGroups.deleteGroup', async (element?: TreeElement) => {
-      if (!provider || !element || isFileNode(element)) return;
+      if (!provider || !element || !isGroup(element)) return;
       const confirm = await vscode.window.showWarningMessage(
         `Delete group "${element.name}"? Files in it will become ungrouped. Nested subgroups will also be removed.`,
         { modal: true },
@@ -1821,14 +1969,14 @@ export async function activate(context: vscode.ExtensionContext) {
 
   context.subscriptions.push(
     vscode.commands.registerCommand('manualEditorGroups.openAllFilesInGroup', async (element?: TreeElement) => {
-      if (!provider || !element || isFileNode(element)) return;
+      if (!provider || !element || !isGroup(element)) return;
       await provider.openAllFilesInGroup(element);
     })
   );
 
   context.subscriptions.push(
     vscode.commands.registerCommand('manualEditorGroups.openFilesInGroup', async (element?: TreeElement) => {
-      if (!provider || !element || isFileNode(element)) return;
+      if (!provider || !element || !isGroup(element)) return;
       await provider.openFilesInGroup(element);
     })
   );
@@ -1844,6 +1992,11 @@ export async function activate(context: vscode.ExtensionContext) {
 
   context.subscriptions.push(
     vscode.commands.registerCommand('manualEditorGroups.groupByPattern', async (element?: TreeElement) => {
+      if (!provider) return;
+      const group = element && isGroup(element) ? element : undefined;
+      await provider.addGroupPattern(group);
+    }),
+    vscode.commands.registerCommand('manualEditorGroups.groupByPatternSet', async (element?: TreeElement) => {
       if (!provider) return;
       const group = element && isGroup(element) ? element : undefined;
       await provider.addGroupPattern(group);
@@ -1916,6 +2069,7 @@ export async function activate(context: vscode.ExtensionContext) {
     treeView.onDidChangeVisibility((e) => {
       if (e.visible) {
         provider?.refresh();
+        void provider?.revealActiveEditor();
       }
     })
   );

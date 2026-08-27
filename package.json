@@ -2,7 +2,7 @@
   "name": "open-editor-groups",
   "displayName": "Open Editor Groups",
   "description": "Group and organize open editors in a tree view with drag and drop, nested groups, sort, and persistent workspace storage.",
-  "version": "0.1.2",
+  "version": "0.1.4",
   "publisher": "esancaro",
   "author": {
     "name": "Esteban Castro",
@@ -116,6 +116,12 @@
         "command": "manualEditorGroups.groupByPattern",
         "title": "Group by Pattern",
         "category": "OEG"
+      },
+      {
+        "command": "manualEditorGroups.groupByPatternSet",
+        "title": "✓ Group by Pattern",
+        "category": "OEG",
+        "icon": "$(check)"
       },
       {
         "command": "manualEditorGroups.manageGroupPatterns",
@@ -261,22 +267,26 @@
         {
           "command": "manualEditorGroups.sortIconOff",
           "when": "false"
+        },
+        {
+          "command": "manualEditorGroups.groupByPatternSet",
+          "when": "false"
         }
       ],
       "view/item/context": [
         {
           "command": "manualEditorGroups.createSubgroup",
-          "when": "view == manualEditorGroups && viewItem == group",
+          "when": "view == manualEditorGroups && viewItem =~ /group/",
           "group": "1_group@1"
         },
         {
           "command": "manualEditorGroups.renameGroup",
-          "when": "view == manualEditorGroups && viewItem == group",
+          "when": "view == manualEditorGroups && viewItem =~ /group/",
           "group": "1_group@2"
         },
         {
           "command": "manualEditorGroups.deleteGroup",
-          "when": "view == manualEditorGroups && viewItem == group",
+          "when": "view == manualEditorGroups && viewItem =~ /group/",
           "group": "1_group@3"
         },
         {
@@ -285,23 +295,29 @@
           "group": "1_group@4"
         },
         {
+          "command": "manualEditorGroups.groupByPatternSet",
+          "when": "view == manualEditorGroups && viewItem == group-pattern",
+          "group": "1_group@4",
+          "toggled": "true"
+        },
+        {
           "command": "manualEditorGroups.openFilesInGroup",
-          "when": "view == manualEditorGroups && viewItem == group",
+          "when": "view == manualEditorGroups && viewItem =~ /group/",
           "group": "0_open@1"
         },
         {
           "command": "manualEditorGroups.openAllFilesInGroup",
-          "when": "view == manualEditorGroups && viewItem == group",
+          "when": "view == manualEditorGroups && viewItem =~ /group/",
           "group": "0_open@2"
         },
         {
           "command": "manualEditorGroups.addToGroup",
-          "when": "view == manualEditorGroups && (viewItem == file || viewItem == group)",
+          "when": "view == manualEditorGroups && (viewItem =~ /file/ || viewItem =~ /group/)",
           "group": "1_modification@1"
         },
         {
           "command": "manualEditorGroups.moveToGroup",
-          "when": "view == manualEditorGroups && (viewItem == file || viewItem == group)",
+          "when": "view == manualEditorGroups && (viewItem =~ /file/ || viewItem =~ /group/)",
           "group": "1_modification@2"
         },
         {
@@ -311,42 +327,42 @@
         },
         {
           "command": "manualEditorGroups.addToNewGroup",
-          "when": "view == manualEditorGroups && (viewItem == file || viewItem == group)",
+          "when": "view == manualEditorGroups && (viewItem =~ /file/ || viewItem =~ /group/)",
           "group": "1_modification@4"
         },
         {
           "command": "manualEditorGroups.closeEditor",
-          "when": "view == manualEditorGroups && viewItem == file",
-          "group": "inline"
+          "when": "view == manualEditorGroups && viewItem =~ /file/",
+          "group": "inline@0"
         },
         {
           "command": "manualEditorGroups.closeEditorsInGroup",
-          "when": "view == manualEditorGroups && viewItem == group",
+          "when": "view == manualEditorGroups && viewItem =~ /group/",
           "group": "inline"
         },
         {
           "command": "manualEditorGroups.closeEditor",
-          "when": "view == manualEditorGroups && viewItem == file",
+          "when": "view == manualEditorGroups && viewItem =~ /file/",
           "group": "3_close@1"
         },
         {
           "command": "manualEditorGroups.closeEditorsInGroup",
-          "when": "view == manualEditorGroups && viewItem == group",
+          "when": "view == manualEditorGroups && viewItem =~ /group/",
           "group": "3_close@1"
         },
         {
           "command": "manualEditorGroups.copyPath",
-          "when": "view == manualEditorGroups && viewItem == file",
+          "when": "view == manualEditorGroups && viewItem =~ /file/",
           "group": "4_copy@1"
         },
         {
           "command": "manualEditorGroups.copyRelativePath",
-          "when": "view == manualEditorGroups && viewItem == file",
+          "when": "view == manualEditorGroups && viewItem =~ /file/",
           "group": "4_copy@2"
         },
         {
           "command": "manualEditorGroups.copyFilename",
-          "when": "view == manualEditorGroups && viewItem == file",
+          "when": "view == manualEditorGroups && viewItem =~ /file/",
           "group": "4_copy@3"
         }
       ],

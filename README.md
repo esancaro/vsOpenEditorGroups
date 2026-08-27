@@ -13,7 +13,7 @@ Install from the [Visual Studio Code Marketplace](https://marketplace.visualstud
 ## Features
 
 - Tree view in the Explorer sidebar titled **Open Editor Groups**
-- Ungrouped open editors appear directly at the root level (no group wrapper)
+- Ungrouped open editors appear at the root, below an **Ungrouped** divider (not a folder) so they stay visually separate from groups
 - Create groups at the root via the **+** (Create Group) button in the view title
 - Create **sub-groups** via context menu (right-click) on any existing group
 - **Sort** (header icon changes with the mode):
@@ -35,7 +35,7 @@ Install from the [Visual Studio Code Marketplace](https://marketplace.visualstud
 - **Move to Group** — move **this entry** only; other groups that also list the file are unchanged
 - **Add to New Group** (right-click on a file or group) — wraps the item in a new group; works on ungrouped files and on multi-selections
 - **Open Files...** / **Open All Files** on a group — pick files from that group (including closed ones) or open them all. Useful when a group is named after an issue and you want to load its classes again.
-- **Group by Pattern** (`OEG: Group by Pattern`) — regex rules that auto-add a file to a group when it is opened, if it is not already in any group. Nested destinations use `Parent / Child`. Manage or delete rules with `OEG: Manage Group Patterns`.
+- **Group by Pattern** — regex rules that show matching **open** files under the group (not stored in JSON). The pattern is matched against the **whole** workspace-relative path, so `.*.js` matches `src/foo.js` but not `package.json`. Groups with a pattern show `.*` next to the open count, a green folder tint, and a check on the **Group by Pattern** menu. The dialog is pre-filled so you can edit; Save (Enter) or the trash button to remove. Also `OEG: Manage Group Patterns`. Typical JS files: `.*\\.js$`.
 - Rename and delete groups (files in a deleted group become ungrouped; nested subgroups are removed too)
 - Remove a file from a group via context menu ("Remove from Group")
 - Close a file (inline **x**) or close all open files in a group (inline **close all**)
@@ -87,7 +87,7 @@ Accessible from the view title bar or right-click context menus:
 - Files are stored as **workspace-relative paths** (forward slashes), so moving or renaming the project folder does not break groupings. Files outside the workspace stay as full URIs.
 - Older files that still contain `file://` URIs are migrated to relative paths on the next save.
 - Files not mentioned in the file are treated as ungrouped while they are open. Ungrouped files are not stored, so the JSON only grows with groups you create.
-- Auto-group regex rules are stored in `patterns`.
+- Auto-group regex is stored on the group as `"pattern"`. Those groups do **not** store file names; matching open files appear in the tree automatically.
 - You can edit the JSON manually if needed (e.g. to bulk reorganize), then use the Refresh command.
 
 Example:
@@ -103,22 +103,14 @@ Example:
         "src/foo.ts",
         {
           "id": "g_def456",
-          "name": "Utils",
-          "children": [
-            "src/utils/bar.ts"
-          ]
+          "name": "Tests",
+          "pattern": ".*\\.test\\.ts$",
+          "children": []
         }
       ]
     }
   ],
-  "sortMode": "manual",
-  "patterns": [
-    {
-      "pattern": ".*\\.test\\.ts$",
-      "groupId": "g_abc123",
-      "group": "Feature A"
-    }
-  ]
+  "sortMode": "manual"
 }
 ```
 
@@ -127,7 +119,7 @@ Example:
 - Tracks text editors, custom editors, and notebooks. Diff editors, terminals, and other non-file tabs are ignored.
 - In multi-root workspaces the JSON is stored under the first workspace folder's `.vscode`.
 - Duplicate files in groups are prevented.
-- Pattern matching uses JavaScript regular expressions against the workspace-relative path. First matching rule wins. Ungrouping a file does not re-apply the rule until that file is closed and opened again.
+- Pattern matching uses JavaScript regular expressions against the **whole** workspace-relative path (unanchored input is wrapped as `^(?:pattern)$`). A file can match more than one pattern group. Pattern groups list currently open matches only; closed files disappear until they are opened again.
 - Renames done through VS Code are tracked. Renames that happen only on disk (outside VS Code) are not.
 
 ## Privacy

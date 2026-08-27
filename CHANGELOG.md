@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.1.4
+
+- Pattern is matched against the whole relative path, so `.*.js` does not also match `.json`
+- **Group by Pattern** context menu now shows a check when the group has a pattern
+
+## 0.1.3
+
+- **Ungrouped** divider between group folders and ungrouped files (not a folder)
+- Closed grouped files hide from the tree when the tab is closed; associations stay in JSON
+- File context menu: **Remove from Group**
+- Ungrouped files are not persisted
+- Groups with a pattern show `.*` beside the open count, a green folder, and a check on **Group by Pattern**
+- Pattern dialog is pre-filled; Save / Enter to update, trash button to remove
+- Pattern is stored on the group; matching files are not persisted in `children`
+
 ## 0.1.2
 
 - A file can belong to several groups at once (separate entries for the same path)
