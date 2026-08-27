@@ -7,6 +7,8 @@ export interface Group {
   name: string;
   children: (Group | string)[];
   pattern?: string;
+  /** When true, the group starts expanded. Omitted means collapsed. */
+  expanded?: boolean;
 }
 
 type SortMode = 'manual' | 'name' | 'nameDesc';
@@ -126,7 +128,12 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
   private dirtyUris = new Set<string>();
   private fileNodeCache = new Map<string, FileNode>();
   private revealingActive = false;
+  private revealQueued = false;
+  private saveTimer: ReturnType<typeof setTimeout> | undefined;
   private storageUri: vscode.Uri | undefined;
+  /** Last active editor URI; used to decorate tree rows without relying on selection. */
+  private activeUri: string | undefined;
+  private lastOpenKey = '';
 
   constructor() {
     this.initializeStorage();
@@ -148,6 +155,8 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
     }
     await this.load();
     this.refreshOpenUris();
+    this.lastOpenKey = [...this.openUris].sort().join('\0');
+    this.activeUri = this.activeFileUri();
     this.refresh();
   }
 
@@ -160,7 +169,10 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
         void this.onOpenEditorsChanged();
       }),
       vscode.window.onDidChangeActiveTextEditor(() => {
-        void this.revealActiveEditor();
+        this.onActiveEditorChanged();
+      }),
+      vscode.window.onDidChangeActiveNotebookEditor(() => {
+        this.onActiveEditorChanged();
       }),
       vscode.workspace.onDidChangeWorkspaceFolders(async () => {
         await this.initializeStorage();
@@ -181,11 +193,13 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
           this.dirtyUris.delete(uriStr);
         }
         this._onDidChangeTreeData.fire();
+        void this.revealActiveEditor();
       }),
       vscode.workspace.onDidSaveTextDocument((doc) => {
         const uriStr = doc.uri.toString();
         if (this.dirtyUris.delete(uriStr)) {
           this._onDidChangeTreeData.fire();
+          void this.revealActiveEditor();
         }
       }),
       vscode.workspace.onDidRenameFiles(async (e) => {
@@ -205,10 +219,30 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
 
   private async onOpenEditorsChanged(): Promise<void> {
     this.refreshOpenUris();
-    this._onDidChangeTreeData.fire();
-    setTimeout(() => {
+    const key = [...this.openUris].sort().join('\0');
+    const openedChanged = key !== this.lastOpenKey;
+    this.lastOpenKey = key;
+    if (openedChanged) {
+      this.activeUri = this.activeFileUri();
+      this._onDidChangeTreeData.fire();
+      setTimeout(() => {
+        void this.revealActiveEditor();
+      }, 40);
+      return;
+    }
+    this.onActiveEditorChanged();
+  }
+
+  private onActiveEditorChanged(): void {
+    const next = this.activeFileUri();
+    if (next === this.activeUri) {
       void this.revealActiveEditor();
-    }, 0);
+      return;
+    }
+    const prev = this.activeUri;
+    this.activeUri = next;
+    this.emitActiveIndicatorChange(prev, next);
+    void this.revealActiveEditor();
   }
 
   private refreshOpenUris() {
@@ -395,7 +429,8 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
           }
         }
       }
-      result.push({ id, name, children, pattern });
+      const expanded = raw.expanded === true ? true : undefined;
+      result.push({ id, name, children, pattern, expanded });
     }
     return result;
   }
@@ -436,6 +471,9 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
       };
       if (g.pattern) {
         persisted.pattern = g.pattern;
+      }
+      if (g.expanded) {
+        persisted.expanded = true;
       }
       for (const c of g.children) {
         if (typeof c === 'string') {
@@ -514,6 +552,10 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
   }
 
   public async save(): Promise<void> {
+    if (this.saveTimer) {
+      clearTimeout(this.saveTimer);
+      this.saveTimer = undefined;
+    }
     if (!this.storageUri) {
       return;
     }
@@ -545,7 +587,10 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
     if (isFileNode(element)) {
       const uri = vscode.Uri.parse(element.uri);
       const basename = path.basename(uri.fsPath || uri.path);
-      const item = new vscode.TreeItem(basename);
+      const isActive = this.isActiveFile(element.uri);
+      const item = new vscode.TreeItem(
+        isActive ? { label: basename, highlights: [[0, basename.length]] } : basename
+      );
       const dirty = this.dirtyUris.has(element.uri);
       const isOpen = this.openUris.has(element.uri);
 
@@ -565,8 +610,11 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
         const dir = path.dirname(rel);
         const dirLabel = dir && dir !== '.' && dir !== '' ? dir : undefined;
         const bits: string[] = [];
-        if (dirty) {
+        if (isActive || dirty) {
           bits.push('●');
+        }
+        if (dirty && isActive) {
+          bits.push('unsaved');
         }
         if (!isOpen) {
           bits.push('closed');
@@ -575,9 +623,10 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
           bits.push(dirLabel);
         }
         item.description = bits.length > 0 ? bits.join(' ') : undefined;
-        item.tooltip = !isOpen ? `${rel} — closed` : dirty ? `${rel} — unsaved` : rel;
+        const tooltipExtra = isActive ? ' — active editor' : !isOpen ? ' — closed' : dirty ? ' — unsaved' : '';
+        item.tooltip = `${rel}${tooltipExtra}`;
       } catch {
-        item.description = !isOpen ? 'closed' : dirty ? '●' : undefined;
+        item.description = isActive ? '●' : !isOpen ? 'closed' : dirty ? '●' : undefined;
         item.tooltip = element.uri;
       }
       return item;
@@ -586,24 +635,39 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
     const group = element;
     const openCount = this.countOpenFilesInSubtree(group);
     const totalCount = this.countAllFilesInSubtree(group);
+    const activeHidden = this.collapsedGroupHoldsActive(group);
     const item = new vscode.TreeItem(
-      group.name,
-      vscode.TreeItemCollapsibleState.Collapsed
+      activeHidden
+        ? { label: group.name, highlights: [[0, group.name.length]] }
+        : group.name,
+      group.expanded
+        ? vscode.TreeItemCollapsibleState.Expanded
+        : vscode.TreeItemCollapsibleState.Collapsed
     );
     item.id = `g:${group.id}`;
     const pattern = group.pattern;
     item.contextValue = pattern ? 'group-pattern' : 'group';
-    item.iconPath = pattern
-      ? new vscode.ThemeIcon('folder', new vscode.ThemeColor('charts.green'))
-      : new vscode.ThemeIcon('folder');
+    item.iconPath = activeHidden
+      ? new vscode.ThemeIcon('folder', new vscode.ThemeColor('list.highlightForeground'))
+      : pattern
+        ? new vscode.ThemeIcon('folder', new vscode.ThemeColor('charts.green'))
+        : new vscode.ThemeIcon('folder');
     const countLabel = openCount > 0
       ? `(${openCount} open)`
       : totalCount > 0
         ? `(${totalCount})`
         : undefined;
-    item.description = pattern
-      ? (countLabel ? `.* ${countLabel}` : '.*')
-      : countLabel;
+    const activeName = activeHidden && this.activeUri ? this.fileBasename(this.activeUri) : undefined;
+    const descParts: string[] = [];
+    if (pattern) {
+      descParts.push(countLabel ? `.* ${countLabel}` : '.*');
+    } else if (countLabel) {
+      descParts.push(countLabel);
+    }
+    if (activeName) {
+      descParts.push(`● ${activeName}`);
+    }
+    item.description = descParts.length > 0 ? descParts.join(' ') : undefined;
     const tooltipBits = [group.name];
     if (totalCount > 0) {
       tooltipBits.push(`${openCount} open / ${totalCount} files`);
@@ -611,11 +675,19 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
     if (pattern) {
       tooltipBits.push(`pattern /${pattern}/`);
     }
+    if (activeName) {
+      tooltipBits.push(`contains active editor ${activeName}`);
+    }
     item.tooltip = tooltipBits.join(' — ');
     return item;
   }
 
   getChildren(element?: TreeElement): Thenable<TreeElement[]> {
+    if (element && isGroup(element) && !element.expanded) {
+      // VS Code only asks for children of open nodes — keep our flag in sync.
+      element.expanded = true;
+      this.scheduleSave();
+    }
     if (!element) {
       const assigned = this.collectAllAssignedUris();
       const ungrouped: string[] = [];
@@ -1503,6 +1575,7 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
 
   public refresh(target?: TreeElement | null | void): void {
     this.refreshOpenUris();
+    this.activeUri = this.activeFileUri();
     void vscode.commands.executeCommand('setContext', 'manualEditorGroups.sortMode', this.sortMode);
     if (treeView) {
       treeView.description = SORT_LABELS[this.sortMode];
@@ -1529,24 +1602,136 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
     return vscode.window.activeTextEditor?.document.uri.toString();
   }
 
-  private findFirstOpenFileNode(uriStr: string): FileNode | undefined {
-    const walk = (groups: Group[]): FileNode | undefined => {
-      for (const g of groups) {
-        for (const c of g.children ?? []) {
-          if (typeof c === 'string' && c === uriStr && this.openUris.has(c)) {
-            return this.cachedFileNode(c, g.id);
-          }
-          if (isGroup(c)) {
-            const found = walk([c]);
-            if (found) {
-              return found;
-            }
-          }
-        }
+  private isActiveFile(uriStr: string): boolean {
+    return !!this.activeUri && this.activeUri === uriStr;
+  }
+
+  private fileBasename(uriStr: string): string {
+    try {
+      const uri = vscode.Uri.parse(uriStr);
+      return path.basename(uri.fsPath || uri.path) || uriStr;
+    } catch {
+      return uriStr;
+    }
+  }
+
+  private groupContainsFile(group: Group, uriStr: string): boolean {
+    if (this.groupDirectlyContainsOpenFile(group, uriStr)) {
+      return true;
+    }
+    for (const c of group.children ?? []) {
+      if (isGroup(c) && this.groupContainsFile(c, uriStr)) {
+        return true;
       }
-      return undefined;
+    }
+    return false;
+  }
+
+  /** Collapsed group row that hides the active editor (directly or in a nested group). */
+  private collapsedGroupHoldsActive(group: Group): boolean {
+    return !group.expanded && !!this.activeUri && this.groupContainsFile(group, this.activeUri);
+  }
+
+  private emitActiveIndicatorChange(prev?: string, next?: string): void {
+    const uris = [prev, next].filter((u, i, arr): u is string => !!u && arr.indexOf(u) === i);
+    if (uris.length === 0) {
+      return;
+    }
+    const walk = (groups: Group[]): void => {
+      for (const g of groups) {
+        if (uris.some((u) => this.groupContainsFile(g, u))) {
+          this._onDidChangeTreeData.fire(g);
+        }
+        walk((g.children ?? []).filter(isGroup));
+      }
     };
-    const grouped = walk(this.rootGroups);
+    walk(this.rootGroups);
+    const assigned = this.collectAllAssignedUris();
+    for (const u of uris) {
+      if (this.openUris.has(u) && !assigned.has(u)) {
+        this._onDidChangeTreeData.fire(this.cachedFileNode(u, null));
+      }
+    }
+  }
+
+  /**
+   * True when this group's children are shown: the group and every ancestor
+   * are expanded. VS Code cannot highlight a file under a collapsed folder
+   * without expanding it.
+   */
+  private isGroupOpenInTree(groupId: string): boolean {
+    const chain = this.findGroupPath(groupId);
+    return !!chain && chain.every((g) => g.expanded);
+  }
+
+  private findGroupPath(id: string, groups: Group[] = this.rootGroups, trail: Group[] = []): Group[] | undefined {
+    for (const g of groups) {
+      const next = [...trail, g];
+      if (g.id === id) {
+        return next;
+      }
+      const nested = this.findGroupPath(id, (g.children ?? []).filter(isGroup), next);
+      if (nested) {
+        return nested;
+      }
+    }
+    return undefined;
+  }
+
+  private groupDirectlyContainsOpenFile(group: Group, uriStr: string): boolean {
+    if (!this.openUris.has(uriStr)) {
+      return false;
+    }
+    if (group.pattern) {
+      return this.matchesPattern(group.pattern, uriStr);
+    }
+    return (group.children ?? []).some((c) => c === uriStr);
+  }
+
+  /** First visible occurrence under `groups` (already-expanded ancestors only). */
+  private findVisibleOpenFileNode(uriStr: string, groups: Group[] = this.rootGroups): FileNode | undefined {
+    for (const g of groups) {
+      if (this.isGroupOpenInTree(g.id) && this.groupDirectlyContainsOpenFile(g, uriStr)) {
+        return this.cachedFileNode(uriStr, g.id);
+      }
+      const nested = this.findVisibleOpenFileNode(uriStr, (g.children ?? []).filter(isGroup));
+      if (nested) {
+        return nested;
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * Follow the active editor without expanding collapsed groups. Prefer the
+   * occurrence the user is already looking at (selection), then any expanded
+   * group, then ungrouped. Skip entirely if the file is only in collapsed groups.
+   */
+  private findRevealTarget(uriStr: string): FileNode | undefined {
+    const selection = treeView?.selection ?? [];
+    for (const s of selection) {
+      if (isFileNode(s) && s.uri === uriStr && (s.parentId === null || this.isGroupOpenInTree(s.parentId))) {
+        return s;
+      }
+    }
+    for (const s of selection) {
+      const scope = isGroup(s)
+        ? s
+        : isFileNode(s) && s.parentId
+          ? this.findGroupById(s.parentId)
+          : undefined;
+      if (!scope) {
+        continue;
+      }
+      if (this.isGroupOpenInTree(scope.id) && this.groupDirectlyContainsOpenFile(scope, uriStr)) {
+        return this.cachedFileNode(uriStr, scope.id);
+      }
+      const nested = this.findVisibleOpenFileNode(uriStr, (scope.children ?? []).filter(isGroup));
+      if (nested) {
+        return nested;
+      }
+    }
+    const grouped = this.findVisibleOpenFileNode(uriStr);
     if (grouped) {
       return grouped;
     }
@@ -1556,26 +1741,58 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
     return undefined;
   }
 
-  public async revealActiveEditor(): Promise<void> {
-    if (this.revealingActive || !treeView?.visible) {
+  public setGroupExpanded(group: Group, expanded: boolean): void {
+    const next = expanded ? true : undefined;
+    if (group.expanded === next) {
       return;
     }
-    const uriStr = this.activeFileUri();
+    if (next) {
+      group.expanded = true;
+    } else {
+      delete group.expanded;
+    }
+    this.scheduleSave();
+    // Re-style the row: collapsed groups that hide the active file get ● filename.
+    this._onDidChangeTreeData.fire(group);
+  }
+
+  private scheduleSave(): void {
+    if (this.saveTimer) {
+      clearTimeout(this.saveTimer);
+    }
+    this.saveTimer = setTimeout(() => {
+      this.saveTimer = undefined;
+      void this.save();
+    }, 300);
+  }
+
+  public async revealActiveEditor(): Promise<void> {
+    if (!treeView?.visible) {
+      return;
+    }
+    if (this.revealingActive) {
+      this.revealQueued = true;
+      return;
+    }
+    const uriStr = this.activeUri ?? this.activeFileUri();
     if (!uriStr || !this.openUris.has(uriStr)) {
       return;
     }
-    const already = treeView.selection.find((s) => isFileNode(s) && s.uri === uriStr);
-    const target = already ?? this.findFirstOpenFileNode(uriStr);
+    const target = this.findRevealTarget(uriStr);
     if (!target) {
       return;
     }
     this.revealingActive = true;
     try {
-      await treeView.reveal(target, { select: true, focus: false, expand: true });
+      await treeView.reveal(target, { select: true, focus: false, expand: false });
     } catch {
-      // Element may not be materialized yet
+      // Element may not be materialized yet; label ● still marks the row
     } finally {
       this.revealingActive = false;
+      if (this.revealQueued) {
+        this.revealQueued = false;
+        void this.revealActiveEditor();
+      }
     }
   }
 
@@ -2070,6 +2287,16 @@ export async function activate(context: vscode.ExtensionContext) {
       if (e.visible) {
         provider?.refresh();
         void provider?.revealActiveEditor();
+      }
+    }),
+    treeView.onDidExpandElement((e) => {
+      if (isGroup(e.element)) {
+        provider?.setGroupExpanded(e.element, true);
+      }
+    }),
+    treeView.onDidCollapseElement((e) => {
+      if (isGroup(e.element)) {
+        provider?.setGroupExpanded(e.element, false);
       }
     })
   );

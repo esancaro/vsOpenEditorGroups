@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.5
+
+- Following the active editor only selects the file in **already expanded** groups (or Ungrouped). Collapsed groups stay closed
+- If the same file is in several groups, keep the occurrence you were already on instead of jumping to another group
+- Group expanded / collapsed state is stored in `editor-groups.json` as `"expanded": true`
+- The active editor is marked with **●** and a highlighted name on every visible file row (not only tree selection)
+- Collapsed groups that contain the active file highlight their name and show `● filename` so you can find it without opening every group
+
 ## 0.1.4
 
 - Pattern is matched against the whole relative path, so `.*.js` does not also match `.json`

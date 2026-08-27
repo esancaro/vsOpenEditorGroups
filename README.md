@@ -40,6 +40,8 @@ Install from the [Visual Studio Code Marketplace](https://marketplace.visualstud
 - Remove a file from a group via context menu ("Remove from Group")
 - Close a file (inline **x**) or close all open files in a group (inline **close all**)
 - Unsaved files show a **●** marker, like Open Editors
+- The tree **marks the active editor**: visible file rows get a **●** and a highlighted name. Collapsed groups that contain that file also highlight and show `● filename`, so you can see which folders hold it without opening them. VS Code cannot select a hidden child without expanding the folder, so collapsed groups stay closed. If the file is in several expanded groups, the occurrence you were already on is kept instead of jumping to another group
+- Group **expanded / collapsed** state is saved in `.vscode/editor-groups.json` and restored when you reopen the folder
 - Persistent storage: groupings are saved to `.vscode/editor-groups.json` in your workspace
   - When you reopen a file later, if it was previously assigned to a group it will automatically appear under that group again
 - Automatically stays in sync with currently open editors/tabs
@@ -88,6 +90,7 @@ Accessible from the view title bar or right-click context menus:
 - Older files that still contain `file://` URIs are migrated to relative paths on the next save.
 - Files not mentioned in the file are treated as ungrouped while they are open. Ungrouped files are not stored, so the JSON only grows with groups you create.
 - Auto-group regex is stored on the group as `"pattern"`. Those groups do **not** store file names; matching open files appear in the tree automatically.
+- `"expanded": true` means the group is open in the tree. Collapsed groups omit the field.
 - You can edit the JSON manually if needed (e.g. to bulk reorganize), then use the Refresh command.
 
 Example:
@@ -99,6 +102,7 @@ Example:
     {
       "id": "g_abc123",
       "name": "Feature A",
+      "expanded": true,
       "children": [
         "src/foo.ts",
         {
@@ -120,6 +124,7 @@ Example:
 - In multi-root workspaces the JSON is stored under the first workspace folder's `.vscode`.
 - Duplicate files in groups are prevented.
 - Pattern matching uses JavaScript regular expressions against the **whole** workspace-relative path (unanchored input is wrapped as `^(?:pattern)$`). A file can match more than one pattern group. Pattern groups list currently open matches only; closed files disappear until they are opened again.
+- Following the active editor never expands a collapsed group. Those groups are highlighted instead (`● filename`) so you can open the right one.
 - Renames done through VS Code are tracked. Renames that happen only on disk (outside VS Code) are not.
 
 ## Privacy
