@@ -21,7 +21,6 @@ interface PersistedData {
   groups: Group[];
   patterns?: GroupPattern[];
   sortMode?: SortMode;
-  ungroupedOrder?: string[];
 }
 
 const SORT_LABELS: Record<SortMode, string> = {
@@ -32,7 +31,18 @@ const SORT_LABELS: Record<SortMode, string> = {
 
 const SORT_CYCLE: SortMode[] = ['name', 'nameDesc', 'manual'];
 
-type TreeElement = Group | string; // string = file uri.toString()
+/** A file row in the tree. The same URI may appear under several groups. */
+export interface FileNode {
+  kind: 'file';
+  uri: string;
+  parentId: string | null;
+}
+
+type TreeElement = Group | FileNode;
+
+function isFileNode(node: unknown): node is FileNode {
+  return !!node && typeof node === 'object' && (node as FileNode).kind === 'file';
+}
 
 const MIME_TYPE = 'application/vnd.code.tree.manualeditorgroups';
 const URI_LIST_MIME = 'text/uri-list';
@@ -43,8 +53,16 @@ function generateId(): string {
   return 'g_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 10);
 }
 
-function isGroup(node: Group | string): node is Group {
-  return typeof node !== 'string';
+function isGroup(node: unknown): node is Group {
+  return !!node
+    && typeof node === 'object'
+    && !isFileNode(node)
+    && typeof (node as Group).id === 'string'
+    && Array.isArray((node as Group).children);
+}
+
+function makeFileNode(uri: string, parentId: string | null): FileNode {
+  return { kind: 'file', uri, parentId };
 }
 
 function tabResourceUri(tab: vscode.Tab): vscode.Uri | undefined {
@@ -84,7 +102,6 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
   public rootGroups: Group[] = [];
   public patterns: GroupPattern[] = [];
   public sortMode: SortMode = 'name';
-  private ungroupedOrder: string[] = [];
   private openUris = new Set<string>();
   private dirtyUris = new Set<string>();
   private consideredOpenUris = new Set<string>();
@@ -143,12 +160,12 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
         } else {
           this.dirtyUris.delete(uriStr);
         }
-        this._onDidChangeTreeData.fire(uriStr);
+        this._onDidChangeTreeData.fire();
       }),
       vscode.workspace.onDidSaveTextDocument((doc) => {
         const uriStr = doc.uri.toString();
         if (this.dirtyUris.delete(uriStr)) {
-          this._onDidChangeTreeData.fire(uriStr);
+          this._onDidChangeTreeData.fire();
         }
       }),
       vscode.workspace.onDidRenameFiles(async (e) => {
@@ -216,13 +233,43 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
       for (const child of g.children) {
         if (typeof child === 'string') {
           if (this.openUris.has(child)) count++;
-        } else {
+        } else if (isGroup(child)) {
           walk(child);
         }
       }
     };
     walk(group);
     return count;
+  }
+
+  private countAllFilesInSubtree(group: Group): number {
+    let count = 0;
+    const walk = (g: Group) => {
+      for (const child of g.children ?? []) {
+        if (typeof child === 'string') {
+          count++;
+        } else if (isGroup(child)) {
+          walk(child);
+        }
+      }
+    };
+    walk(group);
+    return count;
+  }
+
+  private collectFileUrisInSubtree(group: Group): string[] {
+    const uris: string[] = [];
+    const walk = (g: Group) => {
+      for (const child of g.children ?? []) {
+        if (typeof child === 'string') {
+          uris.push(child);
+        } else if (isGroup(child)) {
+          walk(child);
+        }
+      }
+    };
+    walk(group);
+    return uris;
   }
 
   private collectOpenUrisInSubtree(group: Group): string[] {
@@ -259,13 +306,11 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
       }
       this.patterns = this.sanitizePatterns(data?.patterns);
       this.sortMode = this.sanitizeSortMode(data?.sortMode);
-      this.ungroupedOrder = this.sanitizeUngroupedOrder(data?.ungroupedOrder);
       this.syncPatternLabels();
     } catch {
       this.rootGroups = [];
       this.patterns = [];
       this.sortMode = 'name';
-      this.ungroupedOrder = [];
     }
   }
 
@@ -274,22 +319,6 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
       return raw;
     }
     return 'name';
-  }
-
-  private sanitizeUngroupedOrder(raw: unknown): string[] {
-    if (!Array.isArray(raw)) {
-      return [];
-    }
-    const result: string[] = [];
-    const seen = new Set<string>();
-    for (const item of raw) {
-      if (typeof item !== 'string' || !item) continue;
-      const uri = this.fromStoragePath(item);
-      if (seen.has(uri)) continue;
-      seen.add(uri);
-      result.push(uri);
-    }
-    return result;
   }
 
   private sanitizeGroups(groups: any[]): Group[] {
@@ -418,8 +447,7 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
         version: 2,
         groups: this.toPersistedGroups(this.rootGroups),
         patterns: this.patterns,
-        sortMode: this.sortMode,
-        ungroupedOrder: this.ungroupedOrder.map((u) => this.toStoragePath(u))
+        sortMode: this.sortMode
       };
       const text = JSON.stringify(data, null, 2);
       await vscode.workspace.fs.writeFile(this.storageUri, Buffer.from(text, 'utf8'));
@@ -431,43 +459,49 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
   // --- TreeDataProvider ---
 
   getTreeItem(element: TreeElement): vscode.TreeItem {
-    if (typeof element === 'string') {
-      const uri = vscode.Uri.parse(element);
+    if (isFileNode(element)) {
+      const uri = vscode.Uri.parse(element.uri);
       const basename = path.basename(uri.fsPath || uri.path);
       const item = new vscode.TreeItem(basename);
-      const dirty = this.dirtyUris.has(element);
+      const dirty = this.dirtyUris.has(element.uri);
+      const isOpen = this.openUris.has(element.uri);
 
-      item.id = `f:${element}`;
+      item.id = `f:${element.parentId ?? 'root'}:${element.uri}`;
       item.resourceUri = uri;
       item.contextValue = 'file';
       item.iconPath = vscode.ThemeIcon.File;
       item.command = {
         command: 'vscode.open',
         title: 'Open',
-        arguments: [uri]
+        arguments: [uri, { preview: false }]
       };
 
       try {
         const rel = vscode.workspace.asRelativePath(uri, false);
         const dir = path.dirname(rel);
         const dirLabel = dir && dir !== '.' && dir !== '' ? dir : undefined;
-        if (dirty && dirLabel) {
-          item.description = `● ${dirLabel}`;
-        } else if (dirty) {
-          item.description = '●';
-        } else if (dirLabel) {
-          item.description = dirLabel;
+        const bits: string[] = [];
+        if (dirty) {
+          bits.push('●');
         }
-        item.tooltip = dirty ? `${rel} — unsaved` : rel;
+        if (!isOpen) {
+          bits.push('closed');
+        }
+        if (dirLabel) {
+          bits.push(dirLabel);
+        }
+        item.description = bits.length > 0 ? bits.join(' ') : undefined;
+        item.tooltip = !isOpen ? `${rel} — closed` : dirty ? `${rel} — unsaved` : rel;
       } catch {
-        item.description = dirty ? '●' : undefined;
-        item.tooltip = dirty ? `${element} — unsaved` : element;
+        item.description = !isOpen ? 'closed' : dirty ? '●' : undefined;
+        item.tooltip = element.uri;
       }
       return item;
     }
 
     const group = element;
     const openCount = this.countOpenFilesInSubtree(group);
+    const totalCount = this.countAllFilesInSubtree(group);
     const item = new vscode.TreeItem(
       group.name,
       vscode.TreeItemCollapsibleState.Collapsed
@@ -475,9 +509,13 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
     item.id = `g:${group.id}`;
     item.contextValue = 'group';
     item.iconPath = new vscode.ThemeIcon('folder');
-    item.tooltip = openCount > 0 ? `${group.name} — ${openCount} open` : group.name;
+    item.tooltip = totalCount > 0
+      ? `${group.name} — ${openCount} open / ${totalCount} files`
+      : group.name;
     if (openCount > 0) {
-      item.description = `(${openCount})`;
+      item.description = `(${openCount} open)`;
+    } else if (totalCount > 0) {
+      item.description = `(${totalCount})`;
     }
     return item;
   }
@@ -491,10 +529,13 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
           ungrouped.push(uriStr);
         }
       }
-      return Promise.resolve([...this.rootGroups, ...this.orderFiles(ungrouped, true)]);
+      return Promise.resolve([
+        ...this.rootGroups,
+        ...this.orderFiles(ungrouped, false).map((uri) => makeFileNode(uri, null))
+      ]);
     }
 
-    if (typeof element === 'string') {
+    if (isFileNode(element)) {
       return Promise.resolve([]);
     }
 
@@ -511,11 +552,11 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
           continue;
         }
         if (this.sortMode === 'manual') {
-          mixed.push(child);
+          mixed.push(makeFileNode(child, group.id));
         } else {
           files.push(child);
         }
-      } else {
+      } else if (isGroup(child)) {
         if (this.sortMode === 'manual') {
           mixed.push(child);
         } else {
@@ -526,24 +567,11 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
     if (this.sortMode === 'manual') {
       return mixed;
     }
-    return [...groups, ...this.orderFiles(files, false)];
+    return [...groups, ...this.orderFiles(files, false).map((uri) => makeFileNode(uri, group.id))];
   }
 
-  private orderFiles(files: string[], ungrouped: boolean): string[] {
-    if (this.sortMode === 'manual' && ungrouped) {
-      const remaining = new Set(files);
-      const ordered: string[] = [];
-      for (const uriStr of this.ungroupedOrder) {
-        if (remaining.has(uriStr)) {
-          ordered.push(uriStr);
-          remaining.delete(uriStr);
-        }
-      }
-      const rest = [...remaining].sort((a, b) => this.compareFiles(a, b));
-      ordered.push(...rest);
-      return ordered;
-    }
-    if (this.sortMode === 'manual') {
+  private orderFiles(files: string[], preserveStoredOrder: boolean): string[] {
+    if (preserveStoredOrder && this.sortMode === 'manual') {
       return files;
     }
     return [...files].sort((a, b) => this.compareFiles(a, b));
@@ -557,8 +585,8 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
   }
 
   getParent(element: TreeElement): TreeElement | undefined {
-    if (typeof element === 'string') {
-      return this.findParentGroupForUri(element);
+    if (isFileNode(element)) {
+      return element.parentId ? this.findGroupById(element.parentId) : undefined;
     }
     return this.findParentGroupForGroup(element);
   }
@@ -573,19 +601,19 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
     dataTransfer: vscode.DataTransfer,
     _token: vscode.CancellationToken
   ): Promise<void> {
-    const payload: { groups: string[]; files: string[] } = { groups: [], files: [] };
+    const payload: { groups: string[]; files: { uri: string; parentId: string | null }[] } = { groups: [], files: [] };
 
     for (const el of source) {
-      if (typeof el === 'string') {
-        payload.files.push(el);
-      } else {
+      if (isFileNode(el)) {
+        payload.files.push({ uri: el.uri, parentId: el.parentId });
+      } else if (isGroup(el)) {
         payload.groups.push(el.id);
       }
     }
 
     dataTransfer.set(MIME_TYPE, new vscode.DataTransferItem(JSON.stringify(payload)));
     if (payload.files.length > 0) {
-      dataTransfer.set(URI_LIST_MIME, new vscode.DataTransferItem(payload.files.join('\n')));
+      dataTransfer.set(URI_LIST_MIME, new vscode.DataTransferItem(payload.files.map((f) => f.uri).join('\n')));
     }
   }
 
@@ -596,7 +624,7 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
   ): Promise<void> {
     const internal = dataTransfer.get(MIME_TYPE);
     if (internal) {
-      let payload: { groups: string[]; files: string[] };
+      let payload: { groups: string[]; files: { uri: string; parentId: string | null }[] };
       try {
         payload = JSON.parse(await internal.asString());
       } catch {
@@ -615,17 +643,20 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
     await this.applyExternalUriDrop(target, uris);
   }
 
-  private dropAnchor(target: TreeElement | undefined): { destGroup: Group | null; before?: TreeElement } {
+  private dropAnchor(target: TreeElement | undefined): { destGroup: Group | null; before?: Group | string } {
     if (!target) {
       return { destGroup: null };
     }
     if (isGroup(target)) {
       return { destGroup: target };
     }
-    return {
-      destGroup: this.findParentGroupForUri(target) ?? null,
-      before: target
-    };
+    if (isFileNode(target)) {
+      return {
+        destGroup: target.parentId ? this.findGroupById(target.parentId) ?? null : null,
+        before: target.uri
+      };
+    }
+    return { destGroup: null };
   }
 
   private insertIntoList<T>(list: T[], items: T[], before?: T): void {
@@ -641,29 +672,28 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
   }
 
   /** Dragging a file onto a sibling (same group or both ungrouped) means reorder — turn sorting off. */
-  private shouldEnableManualReorder(files: string[], destGroup: Group | null, movingGroups: boolean): boolean {
-    if (this.sortMode === 'manual' || movingGroups || files.length === 0) {
+  private shouldEnableManualReorder(
+    files: { uri: string; parentId: string | null }[],
+    destGroup: Group | null,
+    movingGroups: boolean
+  ): boolean {
+    if (this.sortMode === 'manual' || movingGroups || files.length === 0 || !destGroup) {
       return false;
     }
-    return files.every((f) => (this.findParentGroupForUri(f) ?? null) === destGroup);
-  }
-
-  private removeFromUngroupedOrder(uriStr: string): void {
-    const idx = this.ungroupedOrder.indexOf(uriStr);
-    if (idx >= 0) {
-      this.ungroupedOrder.splice(idx, 1);
-    }
+    const destId = destGroup?.id ?? null;
+    return files.every((f) => f.parentId === destId);
   }
 
   private async applyInternalDrop(
     target: TreeElement | undefined,
-    payload: { groups: string[]; files: string[] }
+    payload: { groups: string[]; files: { uri: string; parentId: string | null }[] }
   ): Promise<void> {
     if (
       payload.files.length === 1
       && payload.groups.length === 0
-      && typeof target === 'string'
-      && payload.files[0] === target
+      && isFileNode(target)
+      && payload.files[0].uri === target.uri
+      && payload.files[0].parentId === target.parentId
     ) {
       return;
     }
@@ -685,17 +715,18 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
       this.removeGroupFromTree(g);
     }
     for (const f of payload.files) {
-      this.removeFileFromTree(f);
-      this.removeFromUngroupedOrder(f);
+      this.removeFileFromGroup(f.uri, f.parentId);
     }
 
-    const changed = groupsToMove.length > 0 || payload.files.length > 0;
+    const fileUris = payload.files.map((f) => f.uri);
+    const changed = groupsToMove.length > 0 || fileUris.length > 0;
     if (!changed) {
       return;
     }
 
     if (destGroup) {
-      const items: (Group | string)[] = [...groupsToMove, ...payload.files];
+      const uniqueFiles = fileUris.filter((uri) => !this.containsDirectUri(destGroup, uri));
+      const items: (Group | string)[] = [...groupsToMove, ...uniqueFiles];
       this.insertIntoList(destGroup.children, items, before);
     } else {
       if (before && isGroup(before)) {
@@ -703,11 +734,6 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
       } else {
         this.rootGroups.push(...groupsToMove);
       }
-      this.insertIntoList(
-        this.ungroupedOrder,
-        payload.files,
-        typeof before === 'string' ? before : undefined
-      );
     }
 
     await this.save();
@@ -741,20 +767,13 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
       }
 
       const normalized = uri.toString();
-      this.removeFileFromTree(normalized);
-      this.removeFromUngroupedOrder(normalized);
       files.push(normalized);
       toOpen.push(uri);
     }
 
     if (destGroup) {
-      this.insertIntoList(destGroup.children, files, before);
-    } else {
-      this.insertIntoList(
-        this.ungroupedOrder,
-        files,
-        typeof before === 'string' ? before : undefined
-      );
+      const uniqueFiles = files.filter((uri) => !this.containsDirectUri(destGroup, uri));
+      this.insertIntoList(destGroup.children, uniqueFiles, before);
     }
 
     for (const uri of toOpen) {
@@ -833,12 +852,10 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
     this.refresh();
   }
 
-  public async ungroupFiles(uriStrs: string[]): Promise<void> {
+  public async ungroupFiles(nodes: FileNode[]): Promise<void> {
     let changed = false;
-    for (const uriStr of uriStrs) {
-      if (this.removeFileFromTree(uriStr)) {
-        this.removeFromUngroupedOrder(uriStr);
-        this.ungroupedOrder.push(uriStr);
+    for (const node of nodes) {
+      if (this.removeFileFromGroup(node.uri, node.parentId)) {
         changed = true;
       }
     }
@@ -888,7 +905,7 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
   }
 
   /**
-   * Moves files and/or groups into an existing group chosen from a Quick Pick.
+   * Adds files to a group without removing other memberships.
    * Nested groups are listed with a path label, e.g. "Parent / Child".
    */
   public async addToGroup(elements: TreeElement[]): Promise<void> {
@@ -896,7 +913,7 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
     if (unique.length === 0) return;
 
     const selectedGroups = unique.filter(isGroup);
-    const files = unique.filter((el): el is string => typeof el === 'string');
+    const files = this.uniqueFileUris(unique);
     const dest = await this.pickDestinationGroup('Add to Group', selectedGroups);
     if (!dest) return;
 
@@ -909,16 +926,110 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
       changed = true;
     }
 
-    for (const f of files) {
-      this.removeFileFromTree(f);
-      this.removeFromUngroupedOrder(f);
-      dest.children.push(f);
+    for (const uri of files) {
+      if (this.containsDirectUri(dest, uri)) {
+        continue;
+      }
+      dest.children.push(uri);
       changed = true;
     }
 
     if (changed) {
       await this.save();
       this.refresh();
+    }
+  }
+
+  /**
+   * Moves this file entry out of its current group into another group.
+   * Other copies of the same file in different groups are left alone.
+   */
+  public async moveToGroup(elements: TreeElement[]): Promise<void> {
+    const unique = this.dedupeElements(elements);
+    const files = unique.filter(isFileNode);
+    const selectedGroups = unique.filter(isGroup);
+    if (files.length === 0 && selectedGroups.length === 0) return;
+
+    const dest = await this.pickDestinationGroup('Move to Group', selectedGroups);
+    if (!dest) return;
+
+    let changed = false;
+
+    for (const g of selectedGroups) {
+      if (this.groupContains(g, dest)) continue;
+      if (!this.removeGroupFromTree(g)) continue;
+      dest.children.push(g);
+      changed = true;
+    }
+
+    for (const node of files) {
+      if (node.parentId === dest.id) {
+        continue;
+      }
+      this.removeFileFromGroup(node.uri, node.parentId);
+      if (!this.containsDirectUri(dest, node.uri)) {
+        dest.children.push(node.uri);
+      }
+      changed = true;
+    }
+
+    if (changed) {
+      await this.save();
+      this.refresh();
+    }
+  }
+
+  public async openAllFilesInGroup(group: Group): Promise<void> {
+    const uris = [...new Set(this.collectFileUrisInSubtree(group))];
+    for (const uriStr of uris) {
+      try {
+        await vscode.commands.executeCommand('vscode.open', vscode.Uri.parse(uriStr), {
+          preview: false,
+          preserveFocus: true
+        });
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  public async openFilesInGroup(group: Group): Promise<void> {
+    const uris = [...new Set(this.collectFileUrisInSubtree(group))];
+    if (uris.length === 0) {
+      vscode.window.showInformationMessage(`"${group.name}" has no files yet.`);
+      return;
+    }
+
+    const items = uris.map((uriStr) => {
+      const uri = vscode.Uri.parse(uriStr);
+      const rel = vscode.workspace.asRelativePath(uri, false);
+      return {
+        label: path.basename(uri.fsPath || uri.path),
+        description: this.openUris.has(uriStr) ? 'open' : 'closed',
+        detail: rel,
+        uriStr
+      };
+    });
+
+    const picked = await vscode.window.showQuickPick(items, {
+      title: `Open files in ${group.name}`,
+      placeHolder: 'Select one or more files to open',
+      canPickMany: true,
+      matchOnDescription: true,
+      matchOnDetail: true
+    });
+    if (!picked || picked.length === 0) {
+      return;
+    }
+    for (const item of picked) {
+      try {
+        await vscode.commands.executeCommand('vscode.open', vscode.Uri.parse(item.uriStr), {
+          preview: false,
+          preserveFocus: true
+        });
+      } catch {
+        // ignore
+      }
     }
   }
 
@@ -932,8 +1043,8 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
     if (unique.length === 0) return;
 
     const first = unique[0];
-    const defaultName = typeof first === 'string'
-      ? path.basename(vscode.Uri.parse(first).fsPath || 'File')
+    const defaultName = isFileNode(first)
+      ? path.basename(vscode.Uri.parse(first.uri).fsPath || 'File')
       : first.name;
 
     const name = await vscode.window.showInputBox({
@@ -955,11 +1066,12 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
     }
 
     for (const el of unique) {
-      if (typeof el === 'string') {
-        this.removeFileFromTree(el);
-        this.removeFromUngroupedOrder(el);
-        wrapper.children.push(el);
-      } else if (!this.groupContains(el, wrapper) && this.removeGroupFromTree(el)) {
+      if (isFileNode(el)) {
+        this.removeFileFromGroup(el.uri, el.parentId);
+        if (!this.containsDirectUri(wrapper, el.uri)) {
+          wrapper.children.push(el.uri);
+        }
+      } else if (isGroup(el) && !this.groupContains(el, wrapper) && this.removeGroupFromTree(el)) {
         wrapper.children.push(el);
       }
     }
@@ -978,7 +1090,7 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
   public async addGroupPattern(preselected?: Group): Promise<void> {
     const pattern = await vscode.window.showInputBox({
       title: 'OEG: Group by Pattern',
-      prompt: 'Regex against the workspace-relative path (use / as separator). First matching rule wins. Files already in a group are left alone.',
+      prompt: 'Regex against the workspace-relative path (use / as separator). Matching files are added to this group without removing other memberships.',
       placeHolder: '.*\\.test\\.ts$',
       validateInput: (value) => {
         if (!value.trim()) {
@@ -1082,16 +1194,14 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
   }
 
   private applyPatternsToNewOpens(): boolean {
-    const assigned = this.collectAllAssignedUris();
     let changed = false;
     for (const uriStr of this.openUris) {
       const isNew = !this.consideredOpenUris.has(uriStr);
       this.consideredOpenUris.add(uriStr);
-      if (!isNew || assigned.has(uriStr)) {
+      if (!isNew) {
         continue;
       }
       if (this.tryAssignByPattern(uriStr)) {
-        assigned.add(uriStr);
         changed = true;
       }
     }
@@ -1105,14 +1215,9 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
 
   /** Apply patterns to every currently open ungrouped file. Returns how many were added. */
   private applyPatternsToUngroupedOpenFiles(): number {
-    const assigned = this.collectAllAssignedUris();
     let count = 0;
     for (const uriStr of this.openUris) {
-      if (assigned.has(uriStr)) {
-        continue;
-      }
       if (this.tryAssignByPattern(uriStr)) {
-        assigned.add(uriStr);
         this.consideredOpenUris.add(uriStr);
         count++;
       }
@@ -1122,6 +1227,7 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
 
   private tryAssignByPattern(uriStr: string): boolean {
     const rel = this.toMatchPath(uriStr);
+    let added = false;
     for (const rule of this.patterns) {
       let re: RegExp;
       try {
@@ -1133,16 +1239,13 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
         continue;
       }
       const group = this.resolvePatternGroup(rule);
-      if (!group) {
+      if (!group || this.containsDirectUri(group, uriStr)) {
         continue;
       }
-      if (!group.children.includes(uriStr)) {
-        group.children.push(uriStr);
-      }
-      this.removeFromUngroupedOrder(uriStr);
-      return true;
+      group.children.push(uriStr);
+      added = true;
     }
-    return false;
+    return added;
   }
 
   private resolvePatternGroup(rule: GroupPattern): Group | undefined {
@@ -1178,11 +1281,12 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
     const seenFiles = new Set<string>();
     const result: TreeElement[] = [];
     for (const el of elements) {
-      if (typeof el === 'string') {
-        if (seenFiles.has(el)) continue;
-        seenFiles.add(el);
+      if (isFileNode(el)) {
+        const key = `${el.parentId ?? ''}::${el.uri}`;
+        if (seenFiles.has(key)) continue;
+        seenFiles.add(key);
         result.push(el);
-      } else {
+      } else if (isGroup(el)) {
         if (seenGroups.has(el.id)) continue;
         seenGroups.add(el.id);
         result.push(el);
@@ -1191,23 +1295,45 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
     return result;
   }
 
+  private uniqueFileUris(elements: TreeElement[]): string[] {
+    const seen = new Set<string>();
+    const uris: string[] = [];
+    for (const el of elements) {
+      if (!isFileNode(el) || seen.has(el.uri)) {
+        continue;
+      }
+      seen.add(el.uri);
+      uris.push(el.uri);
+    }
+    return uris;
+  }
+
   private replaceElementWithWrapper(original: TreeElement, wrapper: Group): boolean {
+    if (isFileNode(original)) {
+      if (!original.parentId) {
+        return false;
+      }
+      const parent = this.findGroupById(original.parentId);
+      if (!parent) {
+        return false;
+      }
+      const idx = parent.children.findIndex((c) => c === original.uri);
+      if (idx < 0) {
+        return false;
+      }
+      wrapper.children = [original.uri];
+      parent.children[idx] = wrapper;
+      return true;
+    }
+
     const replaceInList = (list: (Group | string)[]): boolean => {
       for (let i = 0; i < list.length; i++) {
         const item = list[i];
-
-        if (typeof original === 'string') {
-          if (item === original) {
-            wrapper.children = [item];
-            list[i] = wrapper;
-            return true;
-          }
-        } else if (isGroup(item) && item.id === original.id) {
+        if (isGroup(item) && item.id === original.id) {
           wrapper.children = [item];
           list[i] = wrapper;
           return true;
         }
-
         if (isGroup(item)) {
           if (replaceInList(item.children)) return true;
         }
@@ -1265,15 +1391,6 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
 
   /** Snapshot the current (sorted) display order so Manual Order keeps what the user sees. */
   private captureCurrentVisualOrder(): void {
-    const assigned = this.collectAllAssignedUris();
-    const ungrouped: string[] = [];
-    for (const uriStr of this.openUris) {
-      if (!assigned.has(uriStr)) {
-        ungrouped.push(uriStr);
-      }
-    }
-    this.ungroupedOrder = this.orderFiles(ungrouped, true);
-
     const rewrite = (group: Group) => {
       const groups: Group[] = [];
       const openFiles: string[] = [];
@@ -1347,6 +1464,22 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
     return removeFrom(this.rootGroups);
   }
 
+  private removeFileFromGroup(uriStr: string, parentId: string | null): boolean {
+    if (!parentId) {
+      return true;
+    }
+    const parent = this.findGroupById(parentId);
+    if (!parent) {
+      return false;
+    }
+    const idx = parent.children.findIndex((n) => typeof n === 'string' && n === uriStr);
+    if (idx === -1) {
+      return false;
+    }
+    parent.children.splice(idx, 1);
+    return true;
+  }
+
   private removeFileFromTree(uriStr: string): boolean {
     return this.removeNode((n) => typeof n === 'string' && n === uriStr);
   }
@@ -1404,6 +1537,10 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
     return false;
   }
 
+  private containsDirectUri(group: Group, uriStr: string): boolean {
+    return (group.children ?? []).some((c) => typeof c === 'string' && c === uriStr);
+  }
+
   /** True if `maybeDescendant` is `ancestor` or nested somewhere under it. */
   private groupContains(ancestor: Group, maybeDescendant: Group): boolean {
     if (ancestor.id === maybeDescendant.id) return true;
@@ -1443,7 +1580,7 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
     const search = (groups: Group[]): TreeElement | undefined => {
       for (const g of groups) {
         for (const c of g.children) {
-          if (typeof c === 'string' && c === uriStr) return c;
+          if (typeof c === 'string' && c === uriStr) return makeFileNode(c, g.id);
           if (isGroup(c)) {
             const found = search([c]);
             if (found) return found;
@@ -1474,20 +1611,24 @@ function isUriLike(value: unknown): value is vscode.Uri {
   return !!value
     && typeof value === 'object'
     && !Array.isArray(value)
+    && !isFileNode(value)
     && typeof (value as vscode.Uri).scheme === 'string'
     && typeof (value as vscode.Uri).toString === 'function'
     && !('children' in (value as object));
 }
 
 function normalizeElement(value: unknown): TreeElement | undefined {
-  if (typeof value === 'string' && value.length > 0) {
+  if (isFileNode(value)) {
     return value;
+  }
+  if (typeof value === 'string' && value.length > 0) {
+    return makeFileNode(value, null);
   }
   if (isGroupElement(value)) {
     return value;
   }
   if (isUriLike(value)) {
-    return value.toString();
+    return makeFileNode(value.toString(), null);
   }
   return undefined;
 }
@@ -1508,10 +1649,17 @@ function asElementList(value: unknown): TreeElement[] {
 }
 
 function sameElement(a: TreeElement, b: TreeElement): boolean {
-  if (typeof a === 'string' || typeof b === 'string') {
-    return a === b;
+  if (isFileNode(a) && isFileNode(b)) {
+    return a.uri === b.uri && a.parentId === b.parentId;
   }
-  return a.id === b.id;
+  if (isGroup(a) && isGroup(b)) {
+    return a.id === b.id;
+  }
+  return false;
+}
+
+function fileUrisOf(elements: TreeElement[]): string[] {
+  return elements.filter(isFileNode).map((f) => f.uri);
 }
 
 /**
@@ -1522,8 +1670,8 @@ function sameElement(a: TreeElement, b: TreeElement): boolean {
  */
 function fileUriFromCommand(element?: unknown): vscode.Uri | undefined {
   const clicked = Array.isArray(element) ? undefined : normalizeElement(element);
-  if (typeof clicked === 'string') {
-    return vscode.Uri.parse(clicked);
+  if (isFileNode(clicked)) {
+    return vscode.Uri.parse(clicked.uri);
   }
   const tab = vscode.window.tabGroups.activeTabGroup?.activeTab;
   const tabUri = tab ? tabResourceUri(tab) : undefined;
@@ -1555,7 +1703,7 @@ function resolveCommandTargets(item?: unknown, selectedItems?: unknown): TreeEle
   );
 
   if (clicked && selected.length > 1 && selected.some((s) => sameElement(s, clicked))) {
-    const files = selected.filter((el): el is string => typeof el === 'string');
+    const files = fileUrisOf(selected);
     if (provider?.coversEveryOpenFile(files)) {
       return [clicked];
     }
@@ -1570,8 +1718,7 @@ function resolveCommandTargets(item?: unknown, selectedItems?: unknown): TreeEle
     return selected;
   }
   if (selected.length > 1) {
-    const files = selected.filter((el): el is string => typeof el === 'string');
-    if (!provider?.coversEveryOpenFile(files)) {
+    if (!provider?.coversEveryOpenFile(fileUrisOf(selected))) {
       return selected;
     }
   }
@@ -1581,8 +1728,7 @@ function resolveCommandTargets(item?: unknown, selectedItems?: unknown): TreeEle
     return treeSelection;
   }
   if (treeSelection.length > 1) {
-    const files = treeSelection.filter((el): el is string => typeof el === 'string');
-    if (!provider?.coversEveryOpenFile(files)) {
+    if (!provider?.coversEveryOpenFile(fileUrisOf(treeSelection))) {
       return treeSelection;
     }
   }
@@ -1591,7 +1737,7 @@ function resolveCommandTargets(item?: unknown, selectedItems?: unknown): TreeEle
   const tabUri = tab ? tabResourceUri(tab) : undefined;
   const editorUri = vscode.window.activeTextEditor?.document.uri;
   const uri = tabUri ?? editorUri;
-  return uri ? [uri.toString()] : [];
+  return uri ? [makeFileNode(uri.toString(), null)] : [];
 }
 
 export async function activate(context: vscode.ExtensionContext) {
@@ -1618,7 +1764,7 @@ export async function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.commands.registerCommand('manualEditorGroups.createSubgroup', async (element?: TreeElement) => {
       if (!provider) return;
-      if (!element || typeof element === 'string') {
+      if (!element || isFileNode(element)) {
         await provider.createGroupAtRoot();
         return;
       }
@@ -1628,14 +1774,14 @@ export async function activate(context: vscode.ExtensionContext) {
 
   context.subscriptions.push(
     vscode.commands.registerCommand('manualEditorGroups.renameGroup', async (element?: TreeElement) => {
-      if (!provider || !element || typeof element === 'string') return;
+      if (!provider || !element || isFileNode(element)) return;
       await provider.renameGroup(element);
     })
   );
 
   context.subscriptions.push(
     vscode.commands.registerCommand('manualEditorGroups.deleteGroup', async (element?: TreeElement) => {
-      if (!provider || !element || typeof element === 'string') return;
+      if (!provider || !element || isFileNode(element)) return;
       const confirm = await vscode.window.showWarningMessage(
         `Delete group "${element.name}"? Files in it will become ungrouped. Nested subgroups will also be removed.`,
         { modal: true },
@@ -1650,7 +1796,7 @@ export async function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.commands.registerCommand('manualEditorGroups.ungroupFile', async (element?: unknown, selectedItems?: unknown) => {
       if (!provider) return;
-      const files = resolveCommandTargets(element, selectedItems).filter((el): el is string => typeof el === 'string');
+      const files = resolveCommandTargets(element, selectedItems).filter(isFileNode);
       await provider.ungroupFiles(files);
     })
   );
@@ -1661,6 +1807,29 @@ export async function activate(context: vscode.ExtensionContext) {
       const targets = resolveCommandTargets(element, selectedItems);
       if (targets.length === 0) return;
       await provider.addToGroup(targets);
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('manualEditorGroups.moveToGroup', async (element?: unknown, selectedItems?: unknown) => {
+      if (!provider) return;
+      const targets = resolveCommandTargets(element, selectedItems);
+      if (targets.length === 0) return;
+      await provider.moveToGroup(targets);
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('manualEditorGroups.openAllFilesInGroup', async (element?: TreeElement) => {
+      if (!provider || !element || isFileNode(element)) return;
+      await provider.openAllFilesInGroup(element);
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('manualEditorGroups.openFilesInGroup', async (element?: TreeElement) => {
+      if (!provider || !element || isFileNode(element)) return;
+      await provider.openFilesInGroup(element);
     })
   );
 
@@ -1676,7 +1845,7 @@ export async function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.commands.registerCommand('manualEditorGroups.groupByPattern', async (element?: TreeElement) => {
       if (!provider) return;
-      const group = element && typeof element !== 'string' ? element : undefined;
+      const group = element && isGroup(element) ? element : undefined;
       await provider.addGroupPattern(group);
     })
   );
@@ -1703,7 +1872,7 @@ export async function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.commands.registerCommand('manualEditorGroups.closeEditor', async (element?: unknown, selectedItems?: unknown) => {
       if (!provider) return;
-      const files = resolveCommandTargets(element, selectedItems).filter((el): el is string => typeof el === 'string');
+      const files = fileUrisOf(resolveCommandTargets(element, selectedItems));
       await provider.closeEditors(files);
     })
   );
@@ -1711,7 +1880,7 @@ export async function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.commands.registerCommand('manualEditorGroups.closeEditorsInGroup', async (element?: unknown, selectedItems?: unknown) => {
       if (!provider) return;
-      const groups = resolveCommandTargets(element, selectedItems).filter((el): el is Group => typeof el !== 'string');
+      const groups = resolveCommandTargets(element, selectedItems).filter(isGroup);
       await provider.closeEditorsInGroups(groups);
     })
   );

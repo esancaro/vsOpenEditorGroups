@@ -2,7 +2,7 @@
   "name": "open-editor-groups",
   "displayName": "Open Editor Groups",
   "description": "Group and organize open editors in a tree view with drag and drop, nested groups, sort, and persistent workspace storage.",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "publisher": "esancaro",
   "author": {
     "name": "Esteban Castro",
@@ -84,12 +84,27 @@
       },
       {
         "command": "manualEditorGroups.ungroupFile",
-        "title": "Move to Ungrouped",
+        "title": "Remove from Group",
         "category": "OEG"
       },
       {
         "command": "manualEditorGroups.addToGroup",
         "title": "Add to Group",
+        "category": "OEG"
+      },
+      {
+        "command": "manualEditorGroups.moveToGroup",
+        "title": "Move to Group",
+        "category": "OEG"
+      },
+      {
+        "command": "manualEditorGroups.openFilesInGroup",
+        "title": "Open Files...",
+        "category": "OEG"
+      },
+      {
+        "command": "manualEditorGroups.openAllFilesInGroup",
+        "title": "Open All Files",
         "category": "OEG"
       },
       {
@@ -270,19 +285,34 @@
           "group": "1_group@4"
         },
         {
+          "command": "manualEditorGroups.openFilesInGroup",
+          "when": "view == manualEditorGroups && viewItem == group",
+          "group": "0_open@1"
+        },
+        {
+          "command": "manualEditorGroups.openAllFilesInGroup",
+          "when": "view == manualEditorGroups && viewItem == group",
+          "group": "0_open@2"
+        },
+        {
           "command": "manualEditorGroups.addToGroup",
           "when": "view == manualEditorGroups && (viewItem == file || viewItem == group)",
           "group": "1_modification@1"
         },
         {
+          "command": "manualEditorGroups.moveToGroup",
+          "when": "view == manualEditorGroups && (viewItem == file || viewItem == group)",
+          "group": "1_modification@2"
+        },
+        {
           "command": "manualEditorGroups.ungroupFile",
           "when": "view == manualEditorGroups && viewItem == file",
-          "group": "1_modification@2"
+          "group": "1_modification@3"
         },
         {
           "command": "manualEditorGroups.addToNewGroup",
           "when": "view == manualEditorGroups && (viewItem == file || viewItem == group)",
-          "group": "1_modification@3"
+          "group": "1_modification@4"
         },
         {
           "command": "manualEditorGroups.closeEditor",

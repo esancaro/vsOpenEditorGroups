@@ -30,11 +30,14 @@ Install from the [Visual Studio Code Marketplace](https://marketplace.visualstud
   - Drop on the view background or on ungrouped files to move items back to ungrouped root
   - Drag files in from the Explorer (they are opened and assigned to the drop target)
   - Multi-select files/groups and drag them together
-- "Add to Group" (right-click on a file, group, editor tab, or editor title) — pick an existing group from a list. Nested groups appear as `Parent / Child`
-- "Add to New Group" (right-click on a file or group) — wraps the item in a new group; works on ungrouped files and on multi-selections
+- A file can belong to **several groups** at once (the same path listed under Issue 1 and Issue 2). When you open it, it shows up in every group it is associated with. Closing a tab hides it from the tree; the association stays in `.vscode/editor-groups.json` until you **Remove from Group**.
+- **Add to Group** — add this file to another group and **keep** existing memberships
+- **Move to Group** — move **this entry** only; other groups that also list the file are unchanged
+- **Add to New Group** (right-click on a file or group) — wraps the item in a new group; works on ungrouped files and on multi-selections
+- **Open Files...** / **Open All Files** on a group — pick files from that group (including closed ones) or open them all. Useful when a group is named after an issue and you want to load its classes again.
 - **Group by Pattern** (`OEG: Group by Pattern`) — regex rules that auto-add a file to a group when it is opened, if it is not already in any group. Nested destinations use `Parent / Child`. Manage or delete rules with `OEG: Manage Group Patterns`.
 - Rename and delete groups (files in a deleted group become ungrouped; nested subgroups are removed too)
-- Move a grouped file back to ungrouped via context menu ("Move to Ungrouped")
+- Remove a file from a group via context menu ("Remove from Group")
 - Close a file (inline **x**) or close all open files in a group (inline **close all**)
 - Unsaved files show a **●** marker, like Open Editors
 - Persistent storage: groupings are saved to `.vscode/editor-groups.json` in your workspace
@@ -63,13 +66,15 @@ Accessible from the view title bar or right-click context menus:
 
 - Create Group (top-level, via title bar + button)
 - Create Subgroup (right-click on a group)
-- Add to Group (right-click on file, group, or editor tab — pick an existing group)
+- Add to Group (keep other memberships)
+- Move to Group (this entry only)
 - Add to New Group (right-click on file or group — wraps it)
+- Open Files... / Open All Files (right-click a group)
 - Group by Pattern (`OEG: Group by Pattern` — Command Palette, view `...` menu, or right-click a group)
 - Manage Group Patterns (`OEG: Manage Group Patterns`)
 - Rename Group
 - Delete Group
-- Move to Ungrouped (on a file entry)
+- Remove from Group (on a file entry)
 - Copy Path / Copy Relative Path / Copy Filename (right-click a file; filename is without the extension)
 - Close (on a file entry; also the inline x)
 - Close All in Group (on a group; also the inline close-all)
@@ -81,7 +86,7 @@ Accessible from the view title bar or right-click context menus:
 - Location: `<workspace>/.vscode/editor-groups.json`
 - Files are stored as **workspace-relative paths** (forward slashes), so moving or renaming the project folder does not break groupings. Files outside the workspace stay as full URIs.
 - Older files that still contain `file://` URIs are migrated to relative paths on the next save.
-- Files not mentioned in the file are treated as ungrouped.
+- Files not mentioned in the file are treated as ungrouped while they are open. Ungrouped files are not stored, so the JSON only grows with groups you create.
 - Auto-group regex rules are stored in `patterns`.
 - You can edit the JSON manually if needed (e.g. to bulk reorganize), then use the Refresh command.
 
@@ -107,7 +112,6 @@ Example:
     }
   ],
   "sortMode": "manual",
-  "ungroupedOrder": [],
   "patterns": [
     {
       "pattern": ".*\\.test\\.ts$",
