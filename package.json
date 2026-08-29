@@ -2,7 +2,7 @@
   "name": "open-editor-groups",
   "displayName": "Open Editor Groups",
   "description": "Group and organize open editors in a tree view with drag and drop, nested groups, sort, and persistent workspace storage.",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "publisher": "esancaro",
   "author": {
     "name": "Esteban Castro",
@@ -139,6 +139,21 @@
         "title": "Close",
         "category": "OEG",
         "icon": "$(close)"
+      },
+      {
+        "command": "manualEditorGroups.backupOpen",
+        "title": "Backup Open Files",
+        "category": "OEG"
+      },
+      {
+        "command": "manualEditorGroups.backupAll",
+        "title": "Backup All Files",
+        "category": "OEG"
+      },
+      {
+        "command": "manualEditorGroups.restoreBackup",
+        "title": "Restore",
+        "category": "OEG"
       },
       {
         "command": "manualEditorGroups.closeEditorsInGroup",
@@ -350,6 +365,21 @@
           "command": "manualEditorGroups.closeEditorsInGroup",
           "when": "view == manualEditorGroups && viewItem =~ /group/",
           "group": "inline"
+        },
+        {
+          "command": "manualEditorGroups.backupOpen",
+          "when": "view == manualEditorGroups && viewItem =~ /group/",
+          "group": "2_backup@1"
+        },
+        {
+          "command": "manualEditorGroups.backupAll",
+          "when": "view == manualEditorGroups && viewItem =~ /group/",
+          "group": "2_backup@2"
+        },
+        {
+          "command": "manualEditorGroups.restoreBackup",
+          "when": "view == manualEditorGroups && viewItem =~ /group/",
+          "group": "2_backup@3"
         },
         {
           "command": "manualEditorGroups.closeEditor",

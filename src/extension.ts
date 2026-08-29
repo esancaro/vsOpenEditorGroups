@@ -32,8 +32,20 @@ import {
 } from './model';
 import { WorkspaceHub } from './storage/hub';
 import { findGroupById as findGroupInList, FolderStore } from './storage/store';
+import { createZip, readZip, safeZipPath, ZipEntry } from './zip';
 
 export type { Group, FileNode, TreeElement, SortMode };
+
+function backupStamp(): string {
+  const d = new Date();
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}`;
+}
+
+function safeFilePart(name: string): string {
+  const cleaned = name.replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_').trim();
+  return cleaned || 'group';
+}
 
 export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement>, vscode.TreeDragAndDropController<TreeElement> {
   private _onDidChangeTreeData = new vscode.EventEmitter<TreeElement | undefined | null | void>();
@@ -1059,6 +1071,10 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
     }
   }
 
+  public async pickGroupForBackup(title: string): Promise<Group | undefined> {
+    return this.pickDestinationGroup(title);
+  }
+
   private async pickDestinationGroup(title: string, exclude: Group[] = []): Promise<Group | undefined> {
     const destinations = this.collectGroupsWithPaths().filter(
       (entry) => !exclude.some((sel) => this.groupContains(sel, entry.group))
@@ -1191,6 +1207,224 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
       await this.persist([...touched]);
       this.refresh();
     }
+  }
+
+  public async backupGroup(group: Group, kind: 'open' | 'all'): Promise<void> {
+    const uris = [...new Set(
+      kind === 'open' ? this.collectOpenUrisInSubtree(group) : this.collectFileUrisInSubtree(group)
+    )];
+    if (uris.length === 0) {
+      vscode.window.showInformationMessage(
+        kind === 'open'
+          ? `"${group.name}" has no open files to back up.`
+          : `"${group.name}" has no files to back up.`
+      );
+      return;
+    }
+
+    const entries: ZipEntry[] = [];
+    const skipped: string[] = [];
+    for (const uriStr of uris) {
+      let uri: vscode.Uri;
+      try {
+        uri = vscode.Uri.parse(uriStr);
+      } catch {
+        skipped.push(uriStr);
+        continue;
+      }
+      if (uri.scheme === 'untitled') {
+        skipped.push(uriStr);
+        continue;
+      }
+      const name = this.zipEntryName(uri);
+      if (!name) {
+        skipped.push(uri.fsPath || uriStr);
+        continue;
+      }
+      try {
+        const bytes = await vscode.workspace.fs.readFile(uri);
+        entries.push({ name, data: Buffer.from(bytes) });
+      } catch {
+        skipped.push(name);
+      }
+    }
+
+    if (entries.length === 0) {
+      vscode.window.showWarningMessage(`Could not read any files in "${group.name}" to back up.`);
+      return;
+    }
+
+    const stamp = backupStamp();
+    const kindLabel = kind === 'open' ? 'open' : 'all';
+    const defaultName = `${safeFilePart(group.name)}-${kindLabel}-${stamp}.zip`;
+    const store = this.storeForGroup(group);
+    const defaultUri = store
+      ? vscode.Uri.joinPath(store.folder.uri, defaultName)
+      : vscode.Uri.file(defaultName);
+
+    const dest = await vscode.window.showSaveDialog({
+      defaultUri,
+      filters: { 'Zip archive': ['zip'] },
+      saveLabel: 'Backup',
+      title: `Backup ${kind === 'open' ? 'open' : 'all'} files in ${group.name}`
+    });
+    if (!dest) {
+      return;
+    }
+
+    try {
+      const zip = createZip(entries);
+      await vscode.workspace.fs.writeFile(dest, zip);
+    } catch (err) {
+      vscode.window.showErrorMessage(`Failed to write backup: ${err}`);
+      return;
+    }
+
+    const extra = skipped.length > 0 ? ` Skipped ${skipped.length} (untitled, outside workspace, or unreadable).` : '';
+    vscode.window.showInformationMessage(
+      `Backed up ${entries.length} file${entries.length === 1 ? '' : 's'} from "${group.name}".${extra}`
+    );
+  }
+
+  public async restoreBackup(_group?: Group): Promise<void> {
+    const picked = await vscode.window.showOpenDialog({
+      canSelectFiles: true,
+      canSelectFolders: false,
+      canSelectMany: false,
+      filters: { 'Zip archive': ['zip'] },
+      openLabel: 'Restore',
+      title: 'Restore files from a group backup'
+    });
+    if (!picked || picked.length === 0) {
+      return;
+    }
+
+    let entries: ZipEntry[];
+    let comment = '';
+    try {
+      const bytes = await vscode.workspace.fs.readFile(picked[0]);
+      const parsed = readZip(Buffer.from(bytes));
+      entries = parsed.entries;
+      comment = parsed.comment;
+    } catch (err) {
+      vscode.window.showErrorMessage(`Could not read zip: ${err}`);
+      return;
+    }
+
+    const stripRoot = this.shouldStripLegacyRootPrefix(entries, comment);
+    const planned: { uri: vscode.Uri; name: string; data: Buffer }[] = [];
+    const skipped: string[] = [];
+    for (const entry of entries) {
+      const safe = safeZipPath(entry.name);
+      if (!safe) {
+        skipped.push(entry.name);
+        continue;
+      }
+      const uri = this.uriFromZipEntry(safe, stripRoot);
+      if (!uri) {
+        skipped.push(safe);
+        continue;
+      }
+      planned.push({ uri, name: safe, data: entry.data });
+    }
+
+    if (planned.length === 0) {
+      vscode.window.showWarningMessage('No files in that zip could be restored into this workspace.');
+      return;
+    }
+
+    const confirm = await vscode.window.showWarningMessage(
+      `Restore will overwrite ${planned.length} file${planned.length === 1 ? '' : 's'} on disk. Continue?`,
+      { modal: true },
+      'Overwrite'
+    );
+    if (confirm !== 'Overwrite') {
+      return;
+    }
+
+    let written = 0;
+    const failed: string[] = [];
+    await vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Notification, title: 'Restoring backup' },
+      async () => {
+        for (const item of planned) {
+          try {
+            await vscode.workspace.fs.writeFile(item.uri, item.data);
+            written++;
+          } catch {
+            failed.push(item.name);
+          }
+        }
+      }
+    );
+
+    const bits = [`Restored ${written} file${written === 1 ? '' : 's'}.`];
+    if (failed.length > 0) {
+      bits.push(`Failed ${failed.length}.`);
+    }
+    if (skipped.length > 0) {
+      bits.push(`Skipped ${skipped.length} (unsafe or outside workspace).`);
+    }
+    vscode.window.showInformationMessage(bits.join(' '));
+  }
+
+  private zipEntryName(uri: vscode.Uri): string | undefined {
+    // Single-folder: path relative to the folder root (`file1.txt`), not `tmp/file1.txt`.
+    // Multi-root: prefix with the workspace folder name so restore can pick the right root.
+    const rel = vscode.workspace.asRelativePath(uri, this.hub.isMultiRoot);
+    if (!rel || path.isAbsolute(rel) || /^[a-zA-Z]:[\\/]/.test(rel)) {
+      return undefined;
+    }
+    return safeZipPath(rel.replace(/\\/g, '/'));
+  }
+
+  /**
+   * Older backups always prefixed the workspace folder name, even in a single-folder
+   * window. Those zips have no OEG comment and every entry starts with `FolderName/`.
+   */
+  private shouldStripLegacyRootPrefix(entries: ZipEntry[], comment: string): boolean {
+    if (comment.startsWith('OEG-backup') || this.hub.isMultiRoot) {
+      return false;
+    }
+    const folder = this.hub.folders[0];
+    if (!folder) {
+      return false;
+    }
+    const prefix = `${folder.name}/`;
+    const files = entries.filter((e) => !e.name.endsWith('/'));
+    return files.length > 0 && files.every((e) => safeZipPath(e.name)?.startsWith(prefix));
+  }
+
+  private uriFromZipEntry(relative: string, stripLegacyRoot: boolean): vscode.Uri | undefined {
+    const folders = this.hub.folders;
+    if (folders.length === 0) {
+      return undefined;
+    }
+    if (folders.length > 1) {
+      const slash = relative.indexOf('/');
+      if (slash > 0) {
+        const folderName = relative.slice(0, slash);
+        const rest = relative.slice(slash + 1);
+        const folder = folders.find((f) => f.name === folderName);
+        if (folder && rest) {
+          return vscode.Uri.joinPath(folder.uri, rest);
+        }
+      }
+    }
+    let rest = relative;
+    if (stripLegacyRoot) {
+      const name = folders[0].name;
+      if (rest === name) {
+        return undefined;
+      }
+      if (rest.startsWith(name + '/')) {
+        rest = rest.slice(name.length + 1);
+      }
+    }
+    if (!rest) {
+      return undefined;
+    }
+    return vscode.Uri.joinPath(folders[0].uri, rest);
   }
 
   public async openAllFilesInGroup(group: Group): Promise<void> {
@@ -2347,6 +2581,26 @@ export async function activate(context: vscode.ExtensionContext) {
       if (!provider) return;
       const files = fileUrisOf(resolveCommandTargets(element, selectedItems));
       await provider.closeEditors(files);
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('manualEditorGroups.backupOpen', async (element?: TreeElement) => {
+      if (!provider) return;
+      const group = element && isGroup(element) ? element : await provider.pickGroupForBackup('Backup Open Files');
+      if (!group) return;
+      await provider.backupGroup(group, 'open');
+    }),
+    vscode.commands.registerCommand('manualEditorGroups.backupAll', async (element?: TreeElement) => {
+      if (!provider) return;
+      const group = element && isGroup(element) ? element : await provider.pickGroupForBackup('Backup All Files');
+      if (!group) return;
+      await provider.backupGroup(group, 'all');
+    }),
+    vscode.commands.registerCommand('manualEditorGroups.restoreBackup', async (element?: TreeElement) => {
+      if (!provider) return;
+      const group = element && isGroup(element) ? element : undefined;
+      await provider.restoreBackup(group);
     })
   );
 

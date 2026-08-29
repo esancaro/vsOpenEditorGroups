@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.7
+
+- Group context menu: **Backup Open Files**, **Backup All Files**, and **Restore** (before Close All in Group). Backup writes a zip of the group's files; restore overwrites matching workspace files after confirmation
+- Single-folder backups no longer prefix the workspace folder name (restore of older `tmp/file.txt` zips still maps to `file.txt` in that folder)
+
 ## 0.1.6
 
 - Multi-root workspaces: one `.vscode/editor-groups.json` per folder, relative paths local to that folder

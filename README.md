@@ -77,6 +77,8 @@ Accessible from the view title bar or right-click context menus:
 - Move to Group (this entry only)
 - Add to New Group (right-click on file or group — wraps it)
 - Open Files... / Open All Files (right-click a group)
+- **Backup Open Files** / **Backup All Files** (right-click a group) — zip the group's currently open files, or every file in the group (including closed), as paths relative to the folder root
+- **Restore** (right-click a group) — pick a backup zip and overwrite those files on disk (asks to confirm)
 - Group by Pattern (`OEG: Group by Pattern` — Command Palette, view `...` menu, or right-click a group)
 - Manage Group Patterns (`OEG: Manage Group Patterns`)
 - Rename Group
