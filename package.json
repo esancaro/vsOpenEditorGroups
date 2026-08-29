@@ -2,7 +2,7 @@
   "name": "open-editor-groups",
   "displayName": "Open Editor Groups",
   "description": "Group and organize open editors in a tree view with drag and drop, nested groups, sort, and persistent workspace storage.",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "publisher": "esancaro",
   "author": {
     "name": "Esteban Castro",
@@ -57,7 +57,13 @@
     "viewsWelcome": [
       {
         "view": "manualEditorGroups",
-        "contents": "No open editors to group yet.\n\nOpen some files, then create a group with the + button or by right-clicking in this view.\nDrag files here from the Explorer or from the ungrouped list."
+        "contents": "No open editors to group yet.\n\nOpen some files, then create a group with the + button or by right-clicking in this view.\nDrag files here from the Explorer or from the ungrouped list.",
+        "when": "workbenchState == folder"
+      },
+      {
+        "view": "manualEditorGroups",
+        "contents": "No grouped or open files to show yet. Workspace folders stay hidden until they have a group or an open editor. Create Group asks which folder should store the group.\n[Create Group](command:manualEditorGroups.createGroup)",
+        "when": "workbenchState == workspace"
       }
     ],
     "commands": [
@@ -274,6 +280,11 @@
         }
       ],
       "view/item/context": [
+        {
+          "command": "manualEditorGroups.createGroup",
+          "when": "view == manualEditorGroups && viewItem == workspace",
+          "group": "1_group@0"
+        },
         {
           "command": "manualEditorGroups.createSubgroup",
           "when": "view == manualEditorGroups && viewItem =~ /group/",

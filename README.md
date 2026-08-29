@@ -26,8 +26,10 @@ Install from the [Visual Studio Code Marketplace](https://marketplace.visualstud
   - Drag file entries (ungrouped or grouped) into any group
   - With sorting **Off**, drag a file onto another file to place it there (inside a group or in the ungrouped list)
   - Drag a file out of a group onto the view background or an ungrouped file to ungroup it
-  - Drag groups into other groups to nest them (reparent)
-  - Drop on the view background or on ungrouped files to move items back to ungrouped root
+  - Drag a group onto another group **at the same level** to place it **before** that group (first, between, or up/down the root list). VS Code does not give extensions a drop-bar between rows, so the whole folder row is the target
+  - In a multi-root workspace, drop onto a folder section (or a group inside it) to store membership in **that** folder's JSON. Dragging a file from folder A into a group in folder B is allowed
+  - To **nest** a group, drop it onto a file or subgroup **inside** the destination, or use **Move to Group**
+  - Drop on the view background, the Ungrouped divider, or an ungrouped file to move a group to the **end** of the list
   - Drag files in from the Explorer (they are opened and assigned to the drop target)
   - Multi-select files/groups and drag them together
 - A file can belong to **several groups** at once (the same path listed under Issue 1 and Issue 2). When you open it, it shows up in every group it is associated with. Closing a tab hides it from the tree; the association stays in `.vscode/editor-groups.json` until you **Remove from Group**.
@@ -42,7 +44,10 @@ Install from the [Visual Studio Code Marketplace](https://marketplace.visualstud
 - Unsaved files show a **●** marker, like Open Editors
 - The tree **marks the active editor**: visible file rows get a **●** and a highlighted name. Collapsed groups that contain that file also highlight and show `● filename`, so you can see which folders hold it without opening them. VS Code cannot select a hidden child without expanding the folder, so collapsed groups stay closed. If the file is in several expanded groups, the occurrence you were already on is kept instead of jumping to another group
 - Group **expanded / collapsed** state is saved in `.vscode/editor-groups.json` and restored when you reopen the folder
-- Persistent storage: groupings are saved to `.vscode/editor-groups.json` in your workspace
+- Persistent storage: groupings are saved to `<folder>/.vscode/editor-groups.json`
+  - **Single-folder:** groups and ungrouped files at the tree root (no extra header)
+  - **Multi-root:** one collapsible section per workspace folder that has a groups file or open editors. Empty roots stay hidden. Title-bar **Create Group** asks which folder; right-click uses that folder
+  - The JSON file is created only when you actually save a group in that folder — opening the picker and canceling does nothing
   - When you reopen a file later, if it was previously assigned to a group it will automatically appear under that group again
 - Automatically stays in sync with currently open editors/tabs
 - File renames/moves inside VS Code update stored URIs so grouped files stay grouped
@@ -58,7 +63,7 @@ Install from the [Visual Studio Code Marketplace](https://marketplace.visualstud
    - You can also drag files from the Explorer into a group.
 5. Right-click a group → **Create Subgroup** to nest further.
 6. Drag groups around to reorganize the hierarchy.
-7. Your structure + file assignments are saved automatically to `.vscode/editor-groups.json`.
+7. Your structure + file assignments are saved automatically to that folder's `.vscode/editor-groups.json`.
 
 Next time you open the workspace (and the same files), the files will be placed in the same groups they were in when last saved.
 
@@ -66,7 +71,7 @@ Next time you open the workspace (and the same files), the files will be placed 
 
 Accessible from the view title bar or right-click context menus:
 
-- Create Group (top-level, via title bar + button)
+- Create Group (title bar / Command Palette: picks a folder in multi-root; right-click a folder section uses that folder)
 - Create Subgroup (right-click on a group)
 - Add to Group (keep other memberships)
 - Move to Group (this entry only)
@@ -85,8 +90,8 @@ Accessible from the view title bar or right-click context menus:
 
 ## Data File
 
-- Location: `<workspace>/.vscode/editor-groups.json`
-- Files are stored as **workspace-relative paths** (forward slashes), so moving or renaming the project folder does not break groupings. Files outside the workspace stay as full URIs.
+- Location: `<that workspace folder>/.vscode/editor-groups.json` (one file per root in a multi-root workspace)
+- Files are stored as paths **relative to that folder** (forward slashes), so moving or renaming the project folder does not break groupings. Files outside the folder stay as full URIs. Never prefixed with another root's name.
 - Older files that still contain `file://` URIs are migrated to relative paths on the next save.
 - Files not mentioned in the file are treated as ungrouped while they are open. Ungrouped files are not stored, so the JSON only grows with groups you create.
 - Auto-group regex is stored on the group as `"pattern"`. Those groups do **not** store file names; matching open files appear in the tree automatically.
@@ -121,9 +126,9 @@ Example:
 ## Notes / Limitations (v0.1)
 
 - Tracks text editors, custom editors, and notebooks. Diff editors, terminals, and other non-file tabs are ignored.
-- In multi-root workspaces the JSON is stored under the first workspace folder's `.vscode`.
 - Duplicate files in groups are prevented.
-- Pattern matching uses JavaScript regular expressions against the **whole** workspace-relative path (unanchored input is wrapped as `^(?:pattern)$`). A file can match more than one pattern group. Pattern groups list currently open matches only; closed files disappear until they are opened again.
+- Pattern matching uses JavaScript regular expressions against the **whole** path relative to that group's folder (unanchored input is wrapped as `^(?:pattern)$`). A file can match more than one pattern group. Pattern groups list currently open matches only; closed files disappear until they are opened again.
+- Open editors that are not inside any workspace folder appear under **Other files** (multi-root only, hidden when empty).
 - Following the active editor never expands a collapsed group. Those groups are highlighted instead (`● filename`) so you can open the right one.
 - Renames done through VS Code are tracked. Renames that happen only on disk (outside VS Code) are not.
 

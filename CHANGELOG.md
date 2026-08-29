@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.6
+
+- Multi-root workspaces: one `.vscode/editor-groups.json` per folder, relative paths local to that folder
+- Empty workspace folders stay hidden until they have a group file or an open editor
+- Title-bar Create Group asks which folder; right-click uses that folder. JSON is created only when a group is saved
+- Drag a group onto a sibling group to insert it **before** that group (reorder at root or in a parent). Nest by dropping onto a child inside the destination, or use Move to Group
+
 ## 0.1.5
 
 - Following the active editor only selects the file in **already expanded** groups (or Ungrouped). Collapsed groups stay closed
