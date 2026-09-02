@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.8
+
+- Group rows have one inline **flag** beside Close All in Group. Click cycles none → red → yellow → green → none. When set, the colored flag stays visible on the row; the folder icon is not recolored (so active-editor highlighting still works). Saved as `"flag"` on the group
+- **Hide Group** removes a group from the tree (membership stays in JSON). **Show Hidden Groups...** lists hidden groups by path; unhiding a subgroup whose parent is hidden also shows the parent (with a prompt)
+
 ## 0.1.7
 
 - Group context menu: **Backup Open Files**, **Backup All Files**, and **Restore** (before Close All in Group). Backup writes a zip of the group's files; restore overwrites matching workspace files after confirmation

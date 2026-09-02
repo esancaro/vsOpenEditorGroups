@@ -8,6 +8,16 @@ export const URI_LIST_MIME = 'text/uri-list';
 export const VSCODE_URI_LIST_MIME = 'application/vnd.code.uri-list';
 
 export type SortMode = 'manual' | 'name' | 'nameDesc';
+export type GroupFlag = 'red' | 'yellow' | 'green';
+
+export const GROUP_FLAGS: GroupFlag[] = ['red', 'yellow', 'green'];
+
+export function sanitizeGroupFlag(raw: unknown): GroupFlag | undefined {
+  if (raw === 'red' || raw === 'yellow' || raw === 'green') {
+    return raw;
+  }
+  return undefined;
+}
 
 export const SORT_LABELS: Record<SortMode, string> = {
   manual: 'Off',
@@ -24,6 +34,10 @@ export interface Group {
   pattern?: string;
   /** When true, the group starts expanded. Omitted means collapsed. */
   expanded?: boolean;
+  /** Optional status flag shown as an inline color on the group. */
+  flag?: GroupFlag;
+  /** When true, the group is hidden and inactive until shown again. */
+  hidden?: boolean;
   /** In-memory only; never written to JSON. */
   storeKey?: string;
 }

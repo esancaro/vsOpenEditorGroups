@@ -38,9 +38,10 @@ Install from the [Visual Studio Code Marketplace](https://marketplace.visualstud
 - **Add to New Group** (right-click on a file or group) — wraps the item in a new group; works on ungrouped files and on multi-selections
 - **Open Files...** / **Open All Files** on a group — pick files from that group (including closed ones) or open them all. Useful when a group is named after an issue and you want to load its classes again.
 - **Group by Pattern** — regex rules that show matching **open** files under the group (not stored in JSON). The pattern is matched against the **whole** workspace-relative path, so `.*.js` matches `src/foo.js` but not `package.json`. Groups with a pattern show `.*` next to the open count, a green folder tint, and a check on the **Group by Pattern** menu. The dialog is pre-filled so you can edit; Save (Enter) or the trash button to remove. Also `OEG: Manage Group Patterns`. Typical JS files: `.*\\.js$`.
-- Rename and delete groups (files in a deleted group become ungrouped; nested subgroups are removed too)
+- Rename, hide, and delete groups (files in a deleted group become ungrouped; nested subgroups are removed too). **Hide Group** takes the group out of the tree; its files show as ungrouped unless they belong to another visible group. **Show Hidden Groups...** (view `…` menu) lists hidden groups by path so you can show them again. Unhiding a subgroup whose parent is also hidden asks to show the parent too.
 - Remove a file from a group via context menu ("Remove from Group")
 - Close a file (inline **x**) or close all open files in a group (inline **close all**)
+- Groups have one **flag** (none → red → yellow → green → none). When none, the outline flag appears on hover beside Close All. When a color is set, that flag stays visible on the row (the folder icon is unchanged so it can still highlight for the active editor). Saved in `editor-groups.json` as `"flag"`
 - Unsaved files show a **●** marker, like Open Editors
 - The tree **marks the active editor**: visible file rows get a **●** and a highlighted name. Collapsed groups that contain that file also highlight and show `● filename`, so you can see which folders hold it without opening them. VS Code cannot select a hidden child without expanding the folder, so collapsed groups stay closed. If the file is in several expanded groups, the occurrence you were already on is kept instead of jumping to another group
 - Group **expanded / collapsed** state is saved in `.vscode/editor-groups.json` and restored when you reopen the folder
@@ -82,6 +83,8 @@ Accessible from the view title bar or right-click context menus:
 - Group by Pattern (`OEG: Group by Pattern` — Command Palette, view `...` menu, or right-click a group)
 - Manage Group Patterns (`OEG: Manage Group Patterns`)
 - Rename Group
+- Hide Group (right-click a group)
+- Show Hidden Groups... (view `…` menu or Command Palette)
 - Delete Group
 - Remove from Group (on a file entry)
 - Copy Path / Copy Relative Path / Copy Filename (right-click a file; filename is without the extension)
@@ -98,6 +101,8 @@ Accessible from the view title bar or right-click context menus:
 - Files not mentioned in the file are treated as ungrouped while they are open. Ungrouped files are not stored, so the JSON only grows with groups you create.
 - Auto-group regex is stored on the group as `"pattern"`. Those groups do **not** store file names; matching open files appear in the tree automatically.
 - `"expanded": true` means the group is open in the tree. Collapsed groups omit the field.
+- `"flag": "red"` | `"yellow"` | `"green"` is the inline status flag. Omit when none is set.
+- `"hidden": true` hides the group (and its subgroups) from the tree until you show it again.
 - You can edit the JSON manually if needed (e.g. to bulk reorganize), then use the Refresh command.
 
 Example:

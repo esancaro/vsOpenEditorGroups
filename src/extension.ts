@@ -4,6 +4,8 @@ import {
   compileUserPattern,
   FileNode,
   folderContainsUri,
+  GROUP_FLAGS,
+  GroupFlag,
   folderForUri,
   generateId,
   Group,
@@ -35,6 +37,27 @@ import { findGroupById as findGroupInList, FolderStore } from './storage/store';
 import { createZip, readZip, safeZipPath, ZipEntry } from './zip';
 
 export type { Group, FileNode, TreeElement, SortMode };
+
+function groupContextValue(group: Group): string {
+  const bits = ['group'];
+  if (group.pattern) {
+    bits.push('pattern');
+  }
+  if (group.flag) {
+    bits.push(`flag-${group.flag}`);
+  }
+  return bits.join('-');
+}
+
+function flagMark(flag: GroupFlag): string {
+  if (flag === 'red') {
+    return '🔴';
+  }
+  if (flag === 'yellow') {
+    return '🟡';
+  }
+  return '🟢';
+}
 
 function backupStamp(): string {
   const d = new Date();
@@ -203,6 +226,9 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
   private collectAssignedUris(store: FolderStore): Set<string> {
     const set = new Set<string>();
     const walk = (g: Group) => {
+      if (g.hidden) {
+        return;
+      }
       if (g.pattern) {
         for (const uri of this.openFilesMatching(g.pattern, store)) {
           set.add(uri);
@@ -263,7 +289,7 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
         if (typeof child === 'string') {
           if (!g.pattern && this.openUris.has(child)) count++;
         } else if (isGroup(child)) {
-          walk(child);
+          if (!child.hidden) walk(child);
         }
       }
     };
@@ -282,7 +308,7 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
         if (typeof child === 'string') {
           if (!g.pattern) count++;
         } else if (isGroup(child)) {
-          walk(child);
+          if (!child.hidden) walk(child);
         }
       }
     };
@@ -301,7 +327,7 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
         if (typeof child === 'string') {
           if (!g.pattern) uris.push(child);
         } else if (isGroup(child)) {
-          walk(child);
+          if (!child.hidden) walk(child);
         }
       }
     };
@@ -453,7 +479,7 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
     );
     item.id = `g:${group.storeKey ?? ''}:${group.id}`;
     const pattern = group.pattern;
-    item.contextValue = pattern ? 'group-pattern' : 'group';
+    item.contextValue = groupContextValue(group);
     item.iconPath = activeHidden
       ? new vscode.ThemeIcon('folder', new vscode.ThemeColor('list.highlightForeground'))
       : pattern
@@ -466,6 +492,9 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
         : undefined;
     const activeName = activeHidden && this.activeUri ? this.fileBasename(this.activeUri) : undefined;
     const descParts: string[] = [];
+    if (group.flag) {
+      descParts.push(flagMark(group.flag));
+    }
     if (pattern) {
       descParts.push(countLabel ? `.* ${countLabel}` : '.*');
     } else if (countLabel) {
@@ -481,6 +510,9 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
     }
     if (pattern) {
       tooltipBits.push(`pattern /${pattern}/`);
+    }
+    if (group.flag) {
+      tooltipBits.push(`${group.flag} flag`);
     }
     if (activeName) {
       tooltipBits.push(`contains active editor ${activeName}`);
@@ -553,10 +585,11 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
     const ungroupedNodes = this.orderFiles(store.sortMode, ungrouped, false).map((uri) =>
       this.cachedFileNode(uri, null, store.storeKey)
     );
-    if (store.rootGroups.length > 0 && ungroupedNodes.length > 0) {
-      return [...store.rootGroups, makeSeparator(store.storeKey), ...ungroupedNodes];
+    const visibleRoots = store.rootGroups.filter((g) => !g.hidden);
+    if (visibleRoots.length > 0 && ungroupedNodes.length > 0) {
+      return [...visibleRoots, makeSeparator(store.storeKey), ...ungroupedNodes];
     }
-    return [...store.rootGroups, ...ungroupedNodes];
+    return [...visibleRoots, ...ungroupedNodes];
   }
 
   private otherFilesChildren(): TreeElement[] {
@@ -592,6 +625,9 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
           files.push(child);
         }
       } else if (isGroup(child)) {
+        if (child.hidden) {
+          continue;
+        }
         child.storeKey = storeKey;
         if (sortMode === 'manual') {
           mixed.push(child);
@@ -1055,6 +1091,83 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
     this.refresh();
   }
 
+  public async hideGroup(group: Group): Promise<void> {
+    const store = this.storeForGroup(group);
+    if (!store) {
+      return;
+    }
+    group.hidden = true;
+    await store.save();
+    this.refresh();
+  }
+
+  public async showHiddenGroups(): Promise<void> {
+    const hidden = this.collectHiddenGroups();
+    if (hidden.length === 0) {
+      vscode.window.showInformationMessage('No hidden groups.');
+      return;
+    }
+
+    const picked = await vscode.window.showQuickPick(
+      hidden.map((entry) => ({
+        label: entry.path,
+        description: entry.group.pattern ? '.*' : undefined,
+        iconPath: new vscode.ThemeIcon('eye-closed'),
+        group: entry.group,
+        path: entry.path
+      })),
+      {
+        title: 'Show Hidden Groups',
+        placeHolder: 'Select one or more groups to show',
+        canPickMany: true,
+        matchOnDescription: true
+      }
+    );
+    if (!picked || picked.length === 0) {
+      return;
+    }
+
+    const selected = new Set(picked.map((p) => p.group));
+    const extraParents: { group: Group; path: string }[] = [];
+    const extraSeen = new Set<string>();
+    for (const item of picked) {
+      const chain = this.findGroupPath(item.group.id, item.group.storeKey) ?? [];
+      for (const ancestor of chain.slice(0, -1)) {
+        if (!ancestor.hidden || selected.has(ancestor) || extraSeen.has(ancestor.id)) {
+          continue;
+        }
+        extraSeen.add(ancestor.id);
+        extraParents.push({ group: ancestor, path: this.groupPathLabel(ancestor) });
+      }
+    }
+
+    if (extraParents.length > 0) {
+      const childLabel = picked.length === 1 ? `"${picked[0].path}"` : 'the selected subgroup(s)';
+      const parentLabel = extraParents.length === 1
+        ? `"${extraParents[0].path}"`
+        : extraParents.map((p) => `"${p.path}"`).join(', ');
+      const confirm = await vscode.window.showWarningMessage(
+        `Unhiding ${childLabel} will also show parent group${extraParents.length === 1 ? '' : 's'} ${parentLabel}. Continue?`,
+        { modal: true },
+        'Show'
+      );
+      if (confirm !== 'Show') {
+        return;
+      }
+    }
+
+    const touched = new Set<FolderStore>();
+    for (const item of [...picked, ...extraParents]) {
+      delete item.group.hidden;
+      const store = this.storeForGroup(item.group);
+      if (store) {
+        touched.add(store);
+      }
+    }
+    await this.persist([...touched]);
+    this.refresh();
+  }
+
   public async ungroupFiles(nodes: FileNode[]): Promise<void> {
     const touched = new Set<FolderStore>();
     let changed = false;
@@ -1077,7 +1190,9 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
 
   private async pickDestinationGroup(title: string, exclude: Group[] = []): Promise<Group | undefined> {
     const destinations = this.collectGroupsWithPaths().filter(
-      (entry) => !exclude.some((sel) => this.groupContains(sel, entry.group))
+      (entry) =>
+        !this.isHiddenInTree(entry.group)
+        && !exclude.some((sel) => this.groupContains(sel, entry.group))
     );
 
     if (destinations.length === 0) {
@@ -1661,7 +1776,7 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
   }
 
   public async manageGroupPatterns(): Promise<void> {
-    const patterned = this.collectGroupsWithPaths().filter((e) => e.group.pattern);
+    const patterned = this.collectGroupsWithPaths().filter((e) => e.group.pattern && !this.isHiddenInTree(e.group));
     if (patterned.length === 0) {
       const choice = await vscode.window.showInformationMessage(
         'No group patterns yet.',
@@ -1894,11 +2009,14 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
   }
 
   private groupContainsFile(group: Group, uriStr: string): boolean {
+    if (group.hidden) {
+      return false;
+    }
     if (this.groupDirectlyContainsOpenFile(group, uriStr)) {
       return true;
     }
     for (const c of group.children ?? []) {
-      if (isGroup(c) && this.groupContainsFile(c, uriStr)) {
+      if (isGroup(c) && !c.hidden && this.groupContainsFile(c, uriStr)) {
         return true;
       }
     }
@@ -1961,7 +2079,7 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
 
   private isGroupOpenInTree(groupId: string, storeKey?: string): boolean {
     const chain = this.findGroupPath(groupId, storeKey);
-    if (!chain || !chain.every((g) => g.expanded)) {
+    if (!chain || chain.some((g) => g.hidden) || !chain.every((g) => g.expanded)) {
       return false;
     }
     if (this.hub.isMultiRoot && storeKey) {
@@ -2008,6 +2126,9 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
   private findVisibleOpenFileNode(uriStr: string, groups?: Group[], storeKey?: string): FileNode | undefined {
     const walk = (list: Group[], key: string): FileNode | undefined => {
       for (const g of list) {
+        if (g.hidden) {
+          continue;
+        }
         if (this.isGroupOpenInTree(g.id, g.storeKey ?? key) && this.groupDirectlyContainsOpenFile(g, uriStr)) {
           return this.cachedFileNode(uriStr, g.id, g.storeKey ?? key);
         }
@@ -2075,6 +2196,19 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
 
   public setFolderExpanded(key: string, expanded: boolean): void {
     this.folderExpanded.set(key, expanded);
+  }
+
+  public cycleGroupFlag(group: Group): void {
+    const order: Array<GroupFlag | undefined> = [undefined, ...GROUP_FLAGS];
+    const idx = order.indexOf(group.flag);
+    const next = order[(idx < 0 ? 0 : idx + 1) % order.length];
+    if (next) {
+      group.flag = next;
+    } else {
+      delete group.flag;
+    }
+    this.storeForGroup(group)?.scheduleSave();
+    this._onDidChangeTreeData.fire(group);
   }
 
   public setGroupExpanded(group: Group, expanded: boolean): void {
@@ -2204,6 +2338,38 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
       if (found) return found;
     }
     return undefined;
+  }
+
+  private isHiddenInTree(group: Group): boolean {
+    const chain = this.findGroupPath(group.id, group.storeKey);
+    return !!chain?.some((g) => g.hidden);
+  }
+
+  private groupPathLabel(group: Group): string {
+    const store = this.storeForGroup(group);
+    const chain = this.findGroupPath(group.id, group.storeKey);
+    const names = (chain ?? [group]).map((g) => g.name);
+    if (this.hub.isMultiRoot && store) {
+      return [store.folder.name, ...names].join(' / ');
+    }
+    return names.join(' / ');
+  }
+
+  private collectHiddenGroups(): { group: Group; path: string }[] {
+    const result: { group: Group; path: string }[] = [];
+    for (const store of this.hub.stores()) {
+      const walk = (groups: Group[]) => {
+        for (const g of groups) {
+          if (!isGroup(g)) continue;
+          if (g.hidden) {
+            result.push({ group: g, path: this.groupPathLabel(g) });
+          }
+          walk((g.children ?? []).filter(isGroup));
+        }
+      };
+      walk(store.rootGroups);
+    }
+    return result;
   }
 
   private collectGroupsWithPaths(): { group: Group; path: string }[] {
@@ -2496,6 +2662,17 @@ export async function activate(context: vscode.ExtensionContext) {
   );
 
   context.subscriptions.push(
+    vscode.commands.registerCommand('manualEditorGroups.hideGroup', async (element?: TreeElement) => {
+      if (!provider || !element || !isGroup(element)) return;
+      await provider.hideGroup(element);
+    }),
+    vscode.commands.registerCommand('manualEditorGroups.showHiddenGroups', async () => {
+      if (!provider) return;
+      await provider.showHiddenGroups();
+    })
+  );
+
+  context.subscriptions.push(
     vscode.commands.registerCommand('manualEditorGroups.ungroupFile', async (element?: unknown, selectedItems?: unknown) => {
       if (!provider) return;
       const files = resolveCommandTargets(element, selectedItems).filter(isFileNode);
@@ -2605,6 +2782,18 @@ export async function activate(context: vscode.ExtensionContext) {
   );
 
   context.subscriptions.push(
+    vscode.commands.registerCommand('manualEditorGroups.flagNone', async (element?: TreeElement) => {
+      if (provider && element && isGroup(element)) provider.cycleGroupFlag(element);
+    }),
+    vscode.commands.registerCommand('manualEditorGroups.flagRedOn', async (element?: TreeElement) => {
+      if (provider && element && isGroup(element)) provider.cycleGroupFlag(element);
+    }),
+    vscode.commands.registerCommand('manualEditorGroups.flagYellowOn', async (element?: TreeElement) => {
+      if (provider && element && isGroup(element)) provider.cycleGroupFlag(element);
+    }),
+    vscode.commands.registerCommand('manualEditorGroups.flagGreenOn', async (element?: TreeElement) => {
+      if (provider && element && isGroup(element)) provider.cycleGroupFlag(element);
+    }),
     vscode.commands.registerCommand('manualEditorGroups.closeEditorsInGroup', async (element?: unknown, selectedItems?: unknown) => {
       if (!provider) return;
       const groups = resolveCommandTargets(element, selectedItems).filter(isGroup);

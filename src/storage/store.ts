@@ -8,6 +8,7 @@ import {
   isMissingFileError,
   isUriString,
   PersistedData,
+  sanitizeGroupFlag,
   sanitizeSortMode,
   SortMode,
   stampStoreKey,
@@ -228,7 +229,9 @@ export class FolderStore {
         }
       }
       const expanded = raw.expanded === true ? true : undefined;
-      result.push({ id, name, children, pattern, expanded, storeKey: this.storeKey });
+      const flag = sanitizeGroupFlag(raw.flag);
+      const hidden = raw.hidden === true ? true : undefined;
+      result.push({ id, name, children, pattern, expanded, flag, hidden, storeKey: this.storeKey });
     }
     return result;
   }
@@ -317,6 +320,12 @@ export class FolderStore {
       }
       if (g.expanded) {
         persisted.expanded = true;
+      }
+      if (g.flag) {
+        persisted.flag = g.flag;
+      }
+      if (g.hidden) {
+        persisted.hidden = true;
       }
       for (const c of g.children) {
         if (typeof c === 'string') {
