@@ -14,6 +14,7 @@ Install from the [Visual Studio Code Marketplace](https://marketplace.visualstud
 
 - Tree view in the Explorer sidebar titled **Open Editor Groups**
 - Ungrouped open editors appear at the root, below an **Ungrouped** divider (not a folder) so they stay visually separate from groups
+- Editors that are not files (webviews, terminals in the editor area, Claude Code, and similar) appear under **Other editors** below Ungrouped — or below all workspace folders in a multi-root window. They cannot be grouped (no path) and can be closed from the tree
 - Create groups at the root via the **+** (Create Group) button in the view title
 - Create **sub-groups** via context menu (right-click) on any existing group
 - **Sort** (header icon changes with the mode):
@@ -38,7 +39,7 @@ Install from the [Visual Studio Code Marketplace](https://marketplace.visualstud
 - **Add to New Group** (right-click on a file or group) — wraps the item in a new group; works on ungrouped files and on multi-selections
 - **Open Files...** / **Open All Files** on a group — pick files from that group (including closed ones) or open them all. Useful when a group is named after an issue and you want to load its classes again.
 - **Group by Pattern** — regex rules that show matching **open** files under the group (not stored in JSON). The pattern is matched against the **whole** workspace-relative path, so `.*.js` matches `src/foo.js` but not `package.json`. Groups with a pattern show `.*` next to the open count, a green folder tint, and a check on the **Group by Pattern** menu. The dialog is pre-filled so you can edit; Save (Enter) or the trash button to remove. Also `OEG: Manage Group Patterns`. Typical JS files: `.*\\.js$`.
-- Rename, hide, and delete groups (files in a deleted group become ungrouped; nested subgroups are removed too). **Hide Group** takes the group out of the tree; its files show as ungrouped unless they belong to another visible group. **Show Hidden Groups...** (view `…` menu) lists hidden groups by path so you can show them again. Unhiding a subgroup whose parent is also hidden asks to show the parent too.
+- Rename, hide, and delete groups (files in a deleted group become ungrouped; nested subgroups are removed too). **Hide Group** takes the group out of the tree; its files show as ungrouped unless they belong to another visible group. **Show Hidden Groups...** (view `…` menu) lists hidden groups by path so you can show them again. **Show Active on Hidden Groups** opens that list with hidden groups that contain the active editor already selected. Unhiding a subgroup whose parent is also hidden asks to show the parent too.
 - Remove a file from a group via context menu ("Remove from Group")
 - Close a file (inline **x**) or close all open files in a group (inline **close all**)
 - Groups have one **flag** (none → red → yellow → green → none). When none, the outline flag appears on hover beside Close All. When a color is set, that flag stays visible on the row (the folder icon is unchanged so it can still highlight for the active editor). Saved in `editor-groups.json` as `"flag"`
@@ -82,9 +83,10 @@ Accessible from the view title bar or right-click context menus:
 - **Restore** (right-click a group) — pick a backup zip and overwrite those files on disk (asks to confirm)
 - Group by Pattern (`OEG: Group by Pattern` — Command Palette, view `...` menu, or right-click a group)
 - Manage Group Patterns (`OEG: Manage Group Patterns`)
-- Rename Group
+- Rename Group (right-click, or **F2** on the selected group)
 - Hide Group (right-click a group)
 - Show Hidden Groups... (view `…` menu or Command Palette)
+- Show Active on Hidden Groups (view `…` menu — pre-selects hidden groups that contain the active file)
 - Delete Group
 - Remove from Group (on a file entry)
 - Copy Path / Copy Relative Path / Copy Filename (right-click a file; filename is without the extension)

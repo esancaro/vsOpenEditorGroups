@@ -13,7 +13,9 @@ import {
   isGroup,
   isOtherFiles,
   isSeparator,
+  isSpecialEditor,
   isWorkspaceFolder,
+  listSpecialTabBindings,
   makeFileNode,
   makeSeparator,
   makeWorkspaceNode,
@@ -25,6 +27,8 @@ import {
   SORT_CYCLE,
   SORT_LABELS,
   SortMode,
+  SPECIAL_STORE_KEY,
+  SpecialEditorNode,
   stampStoreKey,
   tabResourceUri,
   TreeElement,
@@ -76,6 +80,9 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
 
   private openUris = new Set<string>();
   private dirtyUris = new Set<string>();
+  private specialEditors: SpecialEditorNode[] = [];
+  private activeSpecialId: string | undefined;
+  private specialNodeCache = new Map<string, SpecialEditorNode>();
   private fileNodeCache = new Map<string, FileNode>();
   private revealingActive = false;
   private revealQueued = false;
@@ -151,7 +158,7 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
 
   private async onOpenEditorsChanged(): Promise<void> {
     this.refreshOpenUris();
-    const key = [...this.openUris].sort().join('\0');
+    const key = [...this.openUris].sort().join('\0') + '\n' + this.specialEditors.map((s) => s.id).join('\0');
     const openedChanged = key !== this.lastOpenKey;
     this.lastOpenKey = key;
     if (openedChanged) {
@@ -180,6 +187,7 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
   private refreshOpenUris() {
     this.openUris.clear();
     this.dirtyUris.clear();
+    this.activeSpecialId = undefined;
     for (const tg of vscode.window.tabGroups.all) {
       for (const tab of tg.tabs) {
         const uri = tabResourceUri(tab);
@@ -191,6 +199,27 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
         if (tab.isDirty) {
           this.dirtyUris.add(uriStr);
         }
+      }
+    }
+    this.specialEditors = [];
+    for (const { tab, node } of listSpecialTabBindings()) {
+      let cached = this.specialNodeCache.get(node.id);
+      if (!cached) {
+        cached = node;
+        this.specialNodeCache.set(node.id, cached);
+      } else {
+        cached.label = node.label;
+        cached.isDirty = node.isDirty;
+        cached.kindLabel = node.kindLabel;
+      }
+      this.specialEditors.push(cached);
+      if (tab.isActive) {
+        this.activeSpecialId = cached.id;
+      }
+    }
+    for (const id of [...this.specialNodeCache.keys()]) {
+      if (!this.specialEditors.some((n) => n.id === id)) {
+        this.specialNodeCache.delete(id);
       }
     }
   }
@@ -409,11 +438,38 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
     }
 
     if (isSeparator(element)) {
-      const item = new vscode.TreeItem('Ungrouped', vscode.TreeItemCollapsibleState.None);
-      item.id = `separator:${element.storeKey}`;
+      const label = element.label ?? 'Ungrouped';
+      const item = new vscode.TreeItem(label, vscode.TreeItemCollapsibleState.None);
+      item.id = `separator:${element.storeKey}:${label}`;
       item.contextValue = 'separator';
       item.iconPath = new vscode.ThemeIcon('dash');
-      item.tooltip = 'Open editors that are not in a group';
+      item.tooltip = element.storeKey === SPECIAL_STORE_KEY
+        ? 'Editors that are not files and cannot be grouped'
+        : 'Open editors that are not in a group';
+      return item;
+    }
+
+    if (isSpecialEditor(element)) {
+      const isActive = this.activeSpecialId === element.id;
+      const item = new vscode.TreeItem(
+        isActive ? { label: element.label, highlights: [[0, element.label.length]] } : element.label
+      );
+      item.id = `special:${element.id}`;
+      item.contextValue = 'special';
+      item.iconPath = new vscode.ThemeIcon(
+        element.id.startsWith('terminal:') ? 'terminal' : element.id.startsWith('webview:') ? 'window' : 'preview'
+      );
+      const bits: string[] = [];
+      if (isActive || element.isDirty) {
+        bits.push('●');
+      }
+      if (element.kindLabel) {
+        bits.push(element.kindLabel);
+      }
+      item.description = bits.length > 0 ? bits.join(' ') : undefined;
+      item.tooltip = element.kindLabel
+        ? `${element.label} — ${element.kindLabel} (cannot be grouped)`
+        : `${element.label} — cannot be grouped`;
       return item;
     }
 
@@ -536,7 +592,7 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
     if (isOtherFiles(element)) {
       return Promise.resolve(this.otherFilesChildren());
     }
-    if (isFileNode(element) || isSeparator(element)) {
+    if (isFileNode(element) || isSeparator(element) || isSpecialEditor(element)) {
       return Promise.resolve([]);
     }
     return Promise.resolve(this.visibleGroupChildren(element));
@@ -561,14 +617,14 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
     if (this.outsideWorkspaceOpenUris().length > 0) {
       sections.push(OTHER_FILES_NODE);
     }
-    return sections;
+    return this.appendSpecialEditors(sections);
   }
 
   private legacyUngroupedOnly(): TreeElement[] {
     const nodes = this.orderFiles('name', [...this.openUris], false).map((uri) =>
       this.cachedFileNode(uri, null, OTHER_STORE_KEY)
     );
-    return nodes;
+    return this.appendSpecialEditors(nodes);
   }
 
   private folderRootChildren(store: FolderStore): TreeElement[] {
@@ -586,10 +642,24 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
       this.cachedFileNode(uri, null, store.storeKey)
     );
     const visibleRoots = store.rootGroups.filter((g) => !g.hidden);
+    let rows: TreeElement[];
     if (visibleRoots.length > 0 && ungroupedNodes.length > 0) {
-      return [...visibleRoots, makeSeparator(store.storeKey), ...ungroupedNodes];
+      rows = [...visibleRoots, makeSeparator(store.storeKey), ...ungroupedNodes];
+    } else {
+      rows = [...visibleRoots, ...ungroupedNodes];
     }
-    return [...visibleRoots, ...ungroupedNodes];
+    return this.hub.isMultiRoot ? rows : this.appendSpecialEditors(rows);
+  }
+
+  private appendSpecialEditors(rows: TreeElement[]): TreeElement[] {
+    if (this.specialEditors.length === 0) {
+      return rows;
+    }
+    return [
+      ...rows,
+      makeSeparator(SPECIAL_STORE_KEY, 'Other editors'),
+      ...this.specialEditors
+    ];
   }
 
   private otherFilesChildren(): TreeElement[] {
@@ -669,10 +739,13 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
   }
 
   getParent(element: TreeElement): TreeElement | undefined {
-    if (isWorkspaceFolder(element) || isOtherFiles(element)) {
+    if (isWorkspaceFolder(element) || isOtherFiles(element) || isSpecialEditor(element)) {
       return undefined;
     }
     if (isSeparator(element)) {
+      if (element.storeKey === SPECIAL_STORE_KEY) {
+        return undefined;
+      }
       return this.wrapFolder(element.storeKey);
     }
     if (isFileNode(element)) {
@@ -777,6 +850,9 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
     }
     if (isGroup(target)) {
       return { destStore: this.storeForGroup(target), destGroup: target };
+    }
+    if (isSpecialEditor(target)) {
+      return { destStore: undefined, destGroup: null };
     }
     if (isFileNode(target)) {
       return {
@@ -1101,28 +1177,51 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
     this.refresh();
   }
 
-  public async showHiddenGroups(): Promise<void> {
+  public async showHiddenGroups(preselectActive = false): Promise<void> {
     const hidden = this.collectHiddenGroups();
     if (hidden.length === 0) {
       vscode.window.showInformationMessage('No hidden groups.');
       return;
     }
 
-    const picked = await vscode.window.showQuickPick(
-      hidden.map((entry) => ({
+    const activeUri = preselectActive ? (this.activeUri ?? this.activeFileUri()) : undefined;
+    if (preselectActive && !activeUri) {
+      vscode.window.showInformationMessage('No active editor.');
+      return;
+    }
+
+    const items = hidden.map((entry) => {
+      const holdsActive = !!activeUri && this.groupContainsFileDeep(entry.group, activeUri);
+      const bits: string[] = [];
+      if (holdsActive) {
+        bits.push('active file');
+      }
+      if (entry.group.pattern) {
+        bits.push('.*');
+      }
+      return {
         label: entry.path,
-        description: entry.group.pattern ? '.*' : undefined,
+        description: bits.length > 0 ? bits.join(' · ') : undefined,
         iconPath: new vscode.ThemeIcon('eye-closed'),
         group: entry.group,
-        path: entry.path
-      })),
-      {
-        title: 'Show Hidden Groups',
-        placeHolder: 'Select one or more groups to show',
-        canPickMany: true,
-        matchOnDescription: true
-      }
-    );
+        path: entry.path,
+        picked: holdsActive
+      };
+    });
+
+    if (preselectActive && !items.some((i) => i.picked)) {
+      vscode.window.showInformationMessage('The active file is not in any hidden group.');
+      return;
+    }
+
+    const picked = await vscode.window.showQuickPick(items, {
+      title: preselectActive ? 'Show Active on Hidden Groups' : 'Show Hidden Groups',
+      placeHolder: preselectActive
+        ? 'Groups that contain the active file are selected — choose which to show'
+        : 'Select one or more groups to show',
+      canPickMany: true,
+      matchOnDescription: true
+    });
     if (!picked || picked.length === 0) {
       return;
     }
@@ -1906,6 +2005,22 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
     }
   }
 
+  public async closeSpecialEditors(ids: string[]): Promise<void> {
+    const wanted = new Set(ids);
+    if (wanted.size === 0) {
+      return;
+    }
+    const toClose: vscode.Tab[] = [];
+    for (const { tab, node } of listSpecialTabBindings()) {
+      if (wanted.has(node.id)) {
+        toClose.push(tab);
+      }
+    }
+    if (toClose.length > 0) {
+      await vscode.window.tabGroups.close(toClose);
+    }
+  }
+
   public async closeEditorsInGroups(groups: Group[]): Promise<void> {
     const uris: string[] = [];
     for (const g of groups) {
@@ -1988,9 +2103,12 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
 
   private activeFileUri(): string | undefined {
     const tab = vscode.window.tabGroups.activeTabGroup?.activeTab;
-    const fromTab = tab ? tabResourceUri(tab) : undefined;
-    if (fromTab) {
-      return fromTab.toString();
+    if (tab) {
+      const fromTab = tabResourceUri(tab);
+      if (fromTab) {
+        return fromTab.toString();
+      }
+      return undefined;
     }
     return vscode.window.activeTextEditor?.document.uri.toString();
   }
@@ -2113,6 +2231,19 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
     return undefined;
   }
 
+  /** Membership walk that still sees hidden groups (for “active file on hidden groups”). */
+  private groupContainsFileDeep(group: Group, uriStr: string): boolean {
+    if (this.groupDirectlyContainsOpenFile(group, uriStr)) {
+      return true;
+    }
+    for (const c of group.children ?? []) {
+      if (isGroup(c) && this.groupContainsFileDeep(c, uriStr)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   private groupDirectlyContainsOpenFile(group: Group, uriStr: string): boolean {
     if (!this.openUris.has(uriStr)) {
       return false;
@@ -2233,11 +2364,11 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
       this.revealQueued = true;
       return;
     }
+    const special = this.activeSpecialId
+      ? this.specialNodeCache.get(this.activeSpecialId)
+      : undefined;
     const uriStr = this.activeUri ?? this.activeFileUri();
-    if (!uriStr || !this.openUris.has(uriStr)) {
-      return;
-    }
-    const target = this.findRevealTarget(uriStr);
+    const target = special ?? (uriStr && this.openUris.has(uriStr) ? this.findRevealTarget(uriStr) : undefined);
     if (!target) {
       return;
     }
@@ -2460,7 +2591,7 @@ function normalizeElement(value: unknown): TreeElement | undefined {
   if (isFileNode(value)) {
     return value;
   }
-  if (isWorkspaceFolder(value) || isOtherFiles(value) || isSeparator(value)) {
+  if (isWorkspaceFolder(value) || isOtherFiles(value) || isSeparator(value) || isSpecialEditor(value)) {
     return value;
   }
   if (typeof value === 'string' && value.length > 0) {
@@ -2500,6 +2631,9 @@ function sameElement(a: TreeElement, b: TreeElement): boolean {
   }
   if (isWorkspaceFolder(a) && isWorkspaceFolder(b)) {
     return a.storeKey === b.storeKey;
+  }
+  if (isSpecialEditor(a) && isSpecialEditor(b)) {
+    return a.id === b.id;
   }
   return false;
 }
@@ -2641,9 +2775,16 @@ export async function activate(context: vscode.ExtensionContext) {
   );
 
   context.subscriptions.push(
-    vscode.commands.registerCommand('manualEditorGroups.renameGroup', async (element?: TreeElement) => {
-      if (!provider || !element || !isGroup(element)) return;
-      await provider.renameGroup(element);
+    vscode.commands.registerCommand('manualEditorGroups.renameGroup', async (element?: unknown) => {
+      if (!provider) return;
+      const fromArg = Array.isArray(element)
+        ? element.find(isGroup)
+        : isGroup(element)
+          ? element
+          : undefined;
+      const group = fromArg ?? treeView?.selection.find(isGroup);
+      if (!group) return;
+      await provider.renameGroup(group);
     })
   );
 
@@ -2669,6 +2810,10 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('manualEditorGroups.showHiddenGroups', async () => {
       if (!provider) return;
       await provider.showHiddenGroups();
+    }),
+    vscode.commands.registerCommand('manualEditorGroups.showActiveOnHiddenGroups', async () => {
+      if (!provider) return;
+      await provider.showHiddenGroups(true);
     })
   );
 
@@ -2756,8 +2901,9 @@ export async function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.commands.registerCommand('manualEditorGroups.closeEditor', async (element?: unknown, selectedItems?: unknown) => {
       if (!provider) return;
-      const files = fileUrisOf(resolveCommandTargets(element, selectedItems));
-      await provider.closeEditors(files);
+      const targets = resolveCommandTargets(element, selectedItems);
+      await provider.closeEditors(fileUrisOf(targets));
+      await provider.closeSpecialEditors(targets.filter(isSpecialEditor).map((s) => s.id));
     })
   );
 

@@ -3,6 +3,7 @@ import * as vscode from 'vscode';
 
 export const STORAGE_FILE = 'editor-groups.json';
 export const OTHER_STORE_KEY = 'oeg:other';
+export const SPECIAL_STORE_KEY = 'oeg:special';
 export const MIME_TYPE = 'application/vnd.code.tree.manualeditorgroups';
 export const URI_LIST_MIME = 'text/uri-list';
 export const VSCODE_URI_LIST_MIME = 'application/vnd.code.uri-list';
@@ -60,6 +61,15 @@ export interface FileNode {
 export interface SeparatorNode {
   kind: 'separator';
   storeKey: string;
+  label?: string;
+}
+
+export interface SpecialEditorNode {
+  kind: 'special';
+  id: string;
+  label: string;
+  isDirty: boolean;
+  kindLabel?: string;
 }
 
 export interface WorkspaceFolderNode {
@@ -72,7 +82,7 @@ export interface OtherFilesNode {
   kind: 'other';
 }
 
-export type TreeElement = WorkspaceFolderNode | OtherFilesNode | Group | FileNode | SeparatorNode;
+export type TreeElement = WorkspaceFolderNode | OtherFilesNode | Group | FileNode | SeparatorNode | SpecialEditorNode;
 
 export function generateId(): string {
   return 'g_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 10);
@@ -94,6 +104,10 @@ export function isOtherFiles(node: unknown): node is OtherFilesNode {
   return !!node && typeof node === 'object' && (node as OtherFilesNode).kind === 'other';
 }
 
+export function isSpecialEditor(node: unknown): node is SpecialEditorNode {
+  return !!node && typeof node === 'object' && (node as SpecialEditorNode).kind === 'special';
+}
+
 export function isGroup(node: unknown): node is Group {
   return !!node
     && typeof node === 'object'
@@ -101,6 +115,7 @@ export function isGroup(node: unknown): node is Group {
     && !isSeparator(node)
     && !isWorkspaceFolder(node)
     && !isOtherFiles(node)
+    && !isSpecialEditor(node)
     && typeof (node as Group).id === 'string'
     && Array.isArray((node as Group).children);
 }
@@ -109,8 +124,8 @@ export function makeFileNode(uri: string, parentId: string | null, storeKey: str
   return { kind: 'file', uri, parentId, storeKey };
 }
 
-export function makeSeparator(storeKey: string): SeparatorNode {
-  return { kind: 'separator', storeKey };
+export function makeSeparator(storeKey: string, label?: string): SeparatorNode {
+  return { kind: 'separator', storeKey, label };
 }
 
 export function makeWorkspaceNode(folder: vscode.WorkspaceFolder): WorkspaceFolderNode {
@@ -149,6 +164,65 @@ export function tabResourceUri(tab: vscode.Tab): vscode.Uri | undefined {
     return input.uri;
   }
   return undefined;
+}
+
+/** Stable id for a tab that is not a file (webview, terminal, Claude Code, …). */
+export function specialTabBaseId(tab: vscode.Tab): string | undefined {
+  if (tabResourceUri(tab)) {
+    return undefined;
+  }
+  const input = tab.input;
+  if (input instanceof vscode.TabInputTextDiff || input instanceof vscode.TabInputNotebookDiff) {
+    return undefined;
+  }
+  if (input instanceof vscode.TabInputWebview) {
+    return `webview:${input.viewType}:${tab.label}`;
+  }
+  if (input instanceof vscode.TabInputTerminal) {
+    return `terminal:${tab.label}`;
+  }
+  const ctor = input && typeof input === 'object' && input.constructor
+    ? input.constructor.name
+    : 'editor';
+  return `${ctor}:${tab.label}`;
+}
+
+export function specialTabKindLabel(tab: vscode.Tab): string | undefined {
+  const input = tab.input;
+  if (input instanceof vscode.TabInputWebview) {
+    const raw = input.viewType.replace(/^mainThreadWebview-/, '');
+    return raw || 'Webview';
+  }
+  if (input instanceof vscode.TabInputTerminal) {
+    return 'Terminal';
+  }
+  return undefined;
+}
+
+export function listSpecialTabBindings(): { tab: vscode.Tab; node: SpecialEditorNode }[] {
+  const counts = new Map<string, number>();
+  const out: { tab: vscode.Tab; node: SpecialEditorNode }[] = [];
+  for (const tg of vscode.window.tabGroups.all) {
+    for (const tab of tg.tabs) {
+      const base = specialTabBaseId(tab);
+      if (!base) {
+        continue;
+      }
+      const n = counts.get(base) ?? 0;
+      counts.set(base, n + 1);
+      out.push({
+        tab,
+        node: {
+          kind: 'special',
+          id: n === 0 ? base : `${base}#${n}`,
+          label: tab.label || 'Editor',
+          isDirty: tab.isDirty,
+          kindLabel: specialTabKindLabel(tab)
+        }
+      });
+    }
+  }
+  return out;
 }
 
 export function parseUriList(raw: string): string[] {

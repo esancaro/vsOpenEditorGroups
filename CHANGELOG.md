@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.9
+
+- **F2** renames the selected group when the Open Editor Groups view is focused
+- **Show Active on Hidden Groups** opens the hidden-groups list with groups that contain the active file already selected
+- Non-file editors (webviews, editor-area terminals, Claude Code, and similar) appear under **Other editors** below Ungrouped; they cannot be grouped
+
 ## 0.1.8
 
 - Group rows have one inline **flag** beside Close All in Group. Click cycles none → red → yellow → green → none. When set, the colored flag stays visible on the row; the folder icon is not recolored (so active-editor highlighting still works). Saved as `"flag"` on the group

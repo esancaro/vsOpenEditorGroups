@@ -2,7 +2,7 @@
   "name": "open-editor-groups",
   "displayName": "Open Editor Groups",
   "description": "Group and organize open editors in a tree view with drag and drop, nested groups, sort, and persistent workspace storage.",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "publisher": "esancaro",
   "author": {
     "name": "Esteban Castro",
@@ -96,6 +96,11 @@
       {
         "command": "manualEditorGroups.showHiddenGroups",
         "title": "Show Hidden Groups...",
+        "category": "OEG"
+      },
+      {
+        "command": "manualEditorGroups.showActiveOnHiddenGroups",
+        "title": "Show Active on Hidden Groups",
         "category": "OEG"
       },
       {
@@ -259,6 +264,18 @@
         "category": "OEG"
       }
     ],
+    "keybindings": [
+      {
+        "command": "-renameFile",
+        "key": "f2",
+        "when": "focusedView == manualEditorGroups"
+      },
+      {
+        "command": "manualEditorGroups.renameGroup",
+        "key": "f2",
+        "when": "focusedView == manualEditorGroups && !inputFocus"
+      }
+    ],
     "submenus": [
       {
         "id": "manualEditorGroups.sortMenu",
@@ -311,6 +328,11 @@
           "command": "manualEditorGroups.showHiddenGroups",
           "when": "view == manualEditorGroups",
           "group": "4_hidden@1"
+        },
+        {
+          "command": "manualEditorGroups.showActiveOnHiddenGroups",
+          "when": "view == manualEditorGroups",
+          "group": "4_hidden@2"
         }
       ],
       "manualEditorGroups.sortMenu": [
@@ -430,7 +452,7 @@
         },
         {
           "command": "manualEditorGroups.closeEditor",
-          "when": "view == manualEditorGroups && viewItem =~ /file/",
+          "when": "view == manualEditorGroups && (viewItem =~ /file/ || viewItem == special)",
           "group": "inline@0"
         },
         {
@@ -475,7 +497,7 @@
         },
         {
           "command": "manualEditorGroups.closeEditor",
-          "when": "view == manualEditorGroups && viewItem =~ /file/",
+          "when": "view == manualEditorGroups && (viewItem =~ /file/ || viewItem == special)",
           "group": "3_close@1"
         },
         {
