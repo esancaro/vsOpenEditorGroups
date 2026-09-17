@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.11
+
+- Other editors activate by tab index instead of stepping through every open editor (fixes visible looping on webviews such as Claude Code)
+
 ## 0.1.10
 
 - Clicking an Other editors row brings that tab forward; the row uses the editor/extension icon when it can be resolved

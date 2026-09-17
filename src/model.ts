@@ -359,25 +359,17 @@ export async function revealSpecialTab(id: string): Promise<void> {
     }
   }
 
-  if (!tab.isActive) {
-    const index = tab.group.tabs.indexOf(tab);
-    if (index >= 0 && index < 9) {
-      try {
-        await vscode.commands.executeCommand(`workbench.action.openEditorAtIndex${index + 1}`);
-      } catch {
-        // fall through
-      }
-    }
+  const index = tab.group.tabs.indexOf(tab);
+  if (index < 0) {
+    return;
   }
 
-  if (!tab.isActive) {
-    const n = Math.max(tab.group.tabs.length, 1);
-    for (let i = 0; i < n; i++) {
-      if (tab.isActive) {
-        break;
-      }
-      await vscode.commands.executeCommand('workbench.action.nextEditorInGroup');
-    }
+  // Jump by tab index. Do not cycle nextEditorInGroup — webviews often never
+  // flip tab.isActive in time, which made every editor flash on the way past.
+  if (index < 9) {
+    await vscode.commands.executeCommand(`workbench.action.openEditorAtIndex${index + 1}`);
+  } else {
+    await vscode.commands.executeCommand('workbench.action.openEditorAtIndex', index);
   }
 
   await vscode.commands.executeCommand('workbench.action.focusActiveEditorGroup');
