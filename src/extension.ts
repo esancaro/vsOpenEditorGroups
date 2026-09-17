@@ -27,6 +27,7 @@ import {
   SORT_CYCLE,
   SORT_LABELS,
   SortMode,
+  revealSpecialTab,
   SPECIAL_STORE_KEY,
   SpecialEditorNode,
   stampStoreKey,
@@ -211,6 +212,7 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
         cached.label = node.label;
         cached.isDirty = node.isDirty;
         cached.kindLabel = node.kindLabel;
+        cached.icon = node.icon;
       }
       this.specialEditors.push(cached);
       if (tab.isActive) {
@@ -456,9 +458,14 @@ export class EditorGroupsProvider implements vscode.TreeDataProvider<TreeElement
       );
       item.id = `special:${element.id}`;
       item.contextValue = 'special';
-      item.iconPath = new vscode.ThemeIcon(
+      item.iconPath = element.icon ?? new vscode.ThemeIcon(
         element.id.startsWith('terminal:') ? 'terminal' : element.id.startsWith('webview:') ? 'window' : 'preview'
       );
+      item.command = {
+        command: 'manualEditorGroups.focusSpecial',
+        title: 'Show',
+        arguments: [element]
+      };
       const bits: string[] = [];
       if (isActive || element.isDirty) {
         bits.push('●');
@@ -2899,6 +2906,11 @@ export async function activate(context: vscode.ExtensionContext) {
   );
 
   context.subscriptions.push(
+    vscode.commands.registerCommand('manualEditorGroups.focusSpecial', async (element?: unknown) => {
+      const node = isSpecialEditor(element) ? element : undefined;
+      if (!node) return;
+      await revealSpecialTab(node.id);
+    }),
     vscode.commands.registerCommand('manualEditorGroups.closeEditor', async (element?: unknown, selectedItems?: unknown) => {
       if (!provider) return;
       const targets = resolveCommandTargets(element, selectedItems);

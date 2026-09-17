@@ -14,7 +14,7 @@ Install from the [Visual Studio Code Marketplace](https://marketplace.visualstud
 
 - Tree view in the Explorer sidebar titled **Open Editor Groups**
 - Ungrouped open editors appear at the root, below an **Ungrouped** divider (not a folder) so they stay visually separate from groups
-- Editors that are not files (webviews, terminals in the editor area, Claude Code, and similar) appear under **Other editors** below Ungrouped — or below all workspace folders in a multi-root window. They cannot be grouped (no path) and can be closed from the tree
+- Editors that are not files (webviews, terminals in the editor area, Claude Code, and similar) appear under **Other editors** below Ungrouped — or below all workspace folders in a multi-root window. Click a row to bring that editor forward. They cannot be grouped (no path) and can be closed from the tree
 - Create groups at the root via the **+** (Create Group) button in the view title
 - Create **sub-groups** via context menu (right-click) on any existing group
 - **Sort** (header icon changes with the mode):

@@ -2,7 +2,7 @@
   "name": "open-editor-groups",
   "displayName": "Open Editor Groups",
   "description": "Group and organize open editors in a tree view with drag and drop, nested groups, sort, and persistent workspace storage.",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "publisher": "esancaro",
   "author": {
     "name": "Esteban Castro",
@@ -228,6 +228,11 @@
         "category": "OEG"
       },
       {
+        "command": "manualEditorGroups.focusSpecial",
+        "title": "Show Editor",
+        "category": "OEG"
+      },
+      {
         "command": "manualEditorGroups.refresh",
         "title": "Refresh",
         "category": "OEG",
@@ -350,6 +355,10 @@
         }
       ],
       "commandPalette": [
+        {
+          "command": "manualEditorGroups.focusSpecial",
+          "when": "false"
+        },
         {
           "command": "manualEditorGroups.sortIconAscending",
           "when": "false"

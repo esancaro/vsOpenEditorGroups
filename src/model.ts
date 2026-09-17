@@ -64,12 +64,15 @@ export interface SeparatorNode {
   label?: string;
 }
 
+export type SpecialIcon = vscode.ThemeIcon | vscode.Uri | { light: vscode.Uri; dark: vscode.Uri };
+
 export interface SpecialEditorNode {
   kind: 'special';
   id: string;
   label: string;
   isDirty: boolean;
   kindLabel?: string;
+  icon?: SpecialIcon;
 }
 
 export interface WorkspaceFolderNode {
@@ -217,12 +220,182 @@ export function listSpecialTabBindings(): { tab: vscode.Tab; node: SpecialEditor
           id: n === 0 ? base : `${base}#${n}`,
           label: tab.label || 'Editor',
           isDirty: tab.isDirty,
-          kindLabel: specialTabKindLabel(tab)
+          kindLabel: specialTabKindLabel(tab),
+          icon: iconForSpecialTab(tab)
         }
       });
     }
   }
   return out;
+}
+
+export function iconForSpecialTab(tab: vscode.Tab): SpecialIcon {
+  const input = tab.input;
+  if (input instanceof vscode.TabInputTerminal) {
+    return new vscode.ThemeIcon('terminal');
+  }
+  if (input instanceof vscode.TabInputWebview) {
+    return iconFromViewType(input.viewType) ?? new vscode.ThemeIcon('window');
+  }
+  const ctor = input && typeof input === 'object' && input.constructor
+    ? input.constructor.name
+    : '';
+  if (/terminal/i.test(ctor)) {
+    return new vscode.ThemeIcon('terminal');
+  }
+  if (/chat|claude/i.test(ctor) || /chat|claude/i.test(tab.label)) {
+    return iconFromViewType(ctor) ?? iconFromExtensionHint(ctor + ' ' + tab.label)
+      ?? new vscode.ThemeIcon('comment-discussion');
+  }
+  return iconFromExtensionHint(ctor + ' ' + tab.label) ?? new vscode.ThemeIcon('preview');
+}
+
+function iconFromViewType(viewType: string): SpecialIcon | undefined {
+  const cleaned = viewType.replace(/^mainThreadWebview-/, '');
+  for (const ext of vscode.extensions.all) {
+    const fromContrib = iconFromExtensionContrib(ext, cleaned, viewType);
+    if (fromContrib) {
+      return fromContrib;
+    }
+  }
+  for (const ext of vscode.extensions.all) {
+    if (
+      cleaned === ext.id
+      || cleaned.startsWith(ext.id + '.')
+      || viewType.includes(ext.id)
+    ) {
+      const icon = resolveExtIcon(ext, ext.packageJSON?.icon);
+      if (icon) {
+        return icon;
+      }
+    }
+    const short = ext.id.split('.')[1];
+    if (short && cleaned.toLowerCase().includes(short.toLowerCase())) {
+      const icon = resolveExtIcon(ext, ext.packageJSON?.icon);
+      if (icon) {
+        return icon;
+      }
+    }
+  }
+  return undefined;
+}
+
+function iconFromExtensionHint(hint: string): SpecialIcon | undefined {
+  const lower = hint.toLowerCase();
+  for (const ext of vscode.extensions.all) {
+    const id = ext.id.toLowerCase();
+    const short = id.split('.')[1] ?? id;
+    if (lower.includes(id) || (short.length > 3 && lower.includes(short))) {
+      const icon = resolveExtIcon(ext, ext.packageJSON?.icon);
+      if (icon) {
+        return icon;
+      }
+    }
+  }
+  return undefined;
+}
+
+function iconFromExtensionContrib(
+  ext: vscode.Extension<unknown>,
+  cleaned: string,
+  viewType: string
+): SpecialIcon | undefined {
+  const contrib = ext.packageJSON?.contributes;
+  if (!contrib) {
+    return undefined;
+  }
+  for (const ce of contrib.customEditors ?? []) {
+    if (typeof ce?.viewType === 'string' && (ce.viewType === cleaned || viewType.includes(ce.viewType))) {
+      return resolveExtIcon(ext, ce.icon) ?? resolveExtIcon(ext, ext.packageJSON?.icon);
+    }
+  }
+  const views = contrib.views ?? {};
+  for (const loc of Object.keys(views)) {
+    for (const v of views[loc] ?? []) {
+      if (typeof v?.id === 'string' && (v.id === cleaned || cleaned.startsWith(v.id) || viewType.includes(v.id))) {
+        return resolveExtIcon(ext, v.icon) ?? resolveExtIcon(ext, ext.packageJSON?.icon);
+      }
+    }
+  }
+  return undefined;
+}
+
+function resolveExtIcon(ext: vscode.Extension<unknown>, icon: unknown): SpecialIcon | undefined {
+  if (!icon) {
+    return undefined;
+  }
+  if (typeof icon === 'string') {
+    const trimmed = icon.trim();
+    if (trimmed.startsWith('$(') && trimmed.endsWith(')')) {
+      return new vscode.ThemeIcon(trimmed.slice(2, -1));
+    }
+    return vscode.Uri.joinPath(ext.extensionUri, trimmed);
+  }
+  if (typeof icon === 'object') {
+    const o = icon as { light?: string; dark?: string };
+    if (o.light && o.dark) {
+      return {
+        light: vscode.Uri.joinPath(ext.extensionUri, o.light),
+        dark: vscode.Uri.joinPath(ext.extensionUri, o.dark)
+      };
+    }
+  }
+  return undefined;
+}
+
+export async function revealSpecialTab(id: string): Promise<void> {
+  const binding = listSpecialTabBindings().find((b) => b.node.id === id);
+  if (!binding) {
+    return;
+  }
+  const tab = binding.tab;
+  await focusViewColumn(tab.group.viewColumn);
+
+  if (tab.input instanceof vscode.TabInputTerminal) {
+    const term = vscode.window.terminals.find((t) => t.name === tab.label);
+    if (term) {
+      term.show(false);
+      return;
+    }
+  }
+
+  if (!tab.isActive) {
+    const index = tab.group.tabs.indexOf(tab);
+    if (index >= 0 && index < 9) {
+      try {
+        await vscode.commands.executeCommand(`workbench.action.openEditorAtIndex${index + 1}`);
+      } catch {
+        // fall through
+      }
+    }
+  }
+
+  if (!tab.isActive) {
+    const n = Math.max(tab.group.tabs.length, 1);
+    for (let i = 0; i < n; i++) {
+      if (tab.isActive) {
+        break;
+      }
+      await vscode.commands.executeCommand('workbench.action.nextEditorInGroup');
+    }
+  }
+
+  await vscode.commands.executeCommand('workbench.action.focusActiveEditorGroup');
+}
+
+function focusViewColumn(column: vscode.ViewColumn | undefined): Thenable<unknown> {
+  const map: Partial<Record<number, string>> = {
+    [vscode.ViewColumn.One]: 'workbench.action.focusFirstEditorGroup',
+    [vscode.ViewColumn.Two]: 'workbench.action.focusSecondEditorGroup',
+    [vscode.ViewColumn.Three]: 'workbench.action.focusThirdEditorGroup',
+    [vscode.ViewColumn.Four]: 'workbench.action.focusFourthEditorGroup',
+    [vscode.ViewColumn.Five]: 'workbench.action.focusFifthEditorGroup',
+    [vscode.ViewColumn.Six]: 'workbench.action.focusSixthEditorGroup',
+    [vscode.ViewColumn.Seven]: 'workbench.action.focusSeventhEditorGroup',
+    [vscode.ViewColumn.Eight]: 'workbench.action.focusEighthEditorGroup'
+  };
+  const cmd = column !== undefined ? map[column as number] : undefined;
+  return vscode.commands.executeCommand(cmd ?? 'workbench.action.focusActiveEditorGroup');
 }
 
 export function parseUriList(raw: string): string[] {

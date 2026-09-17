@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.10
+
+- Clicking an Other editors row brings that tab forward; the row uses the editor/extension icon when it can be resolved
+- **F2** rename works when the Open Editor Groups view is focused (Explorer no longer steals the key)
+
 ## 0.1.9
 
 - **F2** renames the selected group when the Open Editor Groups view is focused
